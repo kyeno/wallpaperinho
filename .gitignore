@@ -1,0 +1,22 @@
+# Dependencies
+node_modules/
+.npm/
+*.tgz
+
+# Generated config (user-specific)
+etc/config.js
+etc/profiles.js
+
+# Database files
+var/db/*.sqlite3
+var/db/*.db
+
+# Temporary artifacts
+tmp/
+var/tmp/
+
+# Logs
+*.log
+
+# Workspace files
+*.code-workspace

@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# wallpaperinho - Main entry point for the Wallpaperinho application.
+# Resolves the project root and launches src/main.js with all CLI arguments.
+#
+# @author Ratan M. Kyeno
+# @license MIT
+
+set -euo pipefail
+
+# Resolve the project root directory (parent of bin/)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+export NODE_NO_WARNINGS=1
+
+exec node "$PROJECT_ROOT/src/main.js" "$@"

@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+# clear - Remove all wallpaperinho-generated wallpapers and temporary files.
+#
+# @author Ratan M. Kyeno
+# @license MIT
+
+set -euo pipefail
+
+WALLPAPER_DIR="/home/kyeno/Pictures/Wallpapers"
+TEMP_DIR="/tmp/wallpaperinho"
+
+echo "============================================"
+echo " WARNING: This will permanently delete"
+echo " ALL files matching 'wallpaperinho-*' in:"
+echo "   ${WALLPAPER_DIR}"
+echo " AND remove the temp directory:"
+echo "   ${TEMP_DIR}"
+echo "============================================"
+echo ""
+read -r -p "Are you sure you want to proceed? [y/N] " confirm
+
+case "${confirm}" in
+    [yY][eE][sS]|[yY])
+        ;;
+    *)
+        echo "Aborted."
+        exit 1
+        ;;
+esac
+
+deleted=0
+
+# Remove all wallpaperinho-prefixed files
+for f in "${WALLPAPER_DIR}"/wallpaperinho-*.jpg; do
+    if [[ -f "$f" ]]; then
+        rm -v "$f"
+        ((deleted++))
+    fi
+done
+
+# Remove temp directory if it exists
+if [[ -d "${TEMP_DIR}" ]]; then
+    rm -rv "${TEMP_DIR}"
+fi
+
+echo ""
+echo "Done. Removed ${deleted} wallpaper(s)."

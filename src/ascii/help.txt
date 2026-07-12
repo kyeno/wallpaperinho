@@ -1,0 +1,24 @@
+wallpaperinho — Programmatic multi-monitor wallpaper automation.
+
+USAGE:
+  bin/wallpaperinho [options]
+
+OPTIONS:
+  --debug                Enable debug overlay on generated images (overrides config)
+  --noindex              Skip re-indexing images (use existing database)
+  --recreate             Remove and recreate the database from scratch
+  --profile <name>       Use a named profile for image directories and upscaler settings
+  --directory <path>     Specify an image directory to index (can be repeated, overrides profile)
+  --strategy <name>      Override matching strategy (random|colorHSL|colorPalette|contrast|canny|entropy|gemini)
+  --list-profiles        List available profiles and exit
+  --help                 Show this help message and exit
+
+EXAMPLES:
+  bin/wallpaperinho
+  bin/wallpaperinho --debug
+  bin/wallpaperinho --noindex
+  bin/wallpaperinho --profile liminal
+  bin/wallpaperinho --directory /path/to/images
+  bin/wallpaperinho --directory /a --directory /b --recreate
+  bin/wallpaperinho --strategy canny
+  bin/wallpaperinho --profile liminal --strategy colorHSL
