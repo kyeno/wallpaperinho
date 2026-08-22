@@ -305,25 +305,19 @@ export default class GeminiQwenSelector extends SelectorBase {
                 this.selectorName
             )
 
-            // No candidates at all in this orientation -- fallback to random
+            // No candidates at all in this orientation -- score across orientations, then random
             if (available.length === 0) {
-                const fallback = this.randomSelector.selectSync({ [orient]: needed }, [...usedPaths])
-                for (const s of fallback) {
-                    selectedImages.push(s)
-                    usedIds.add(s.image.id)
-                    usedPaths.add(s.image.path)
+                for (const entry of this.#fillCrossOrRandom(orient, needed, usedIds, usedPaths)) {
+                    selectedImages.push(entry)
                 }
                 continue
             }
 
-            // Candidates exist but none have metric data -- fallback to random
+            // Candidates exist but none have metric data -- score across orientations, then random
             if (poolWithData.length === 0) {
-                this.logger.warn(`No valid ${orient} data -> random fallback`, this.selectorName)
-                const fallback = this.randomSelector.selectSync({ [orient]: needed }, [...usedPaths])
-                for (const s of fallback) {
-                    selectedImages.push(s)
-                    usedIds.add(s.image.id)
-                    usedPaths.add(s.image.path)
+                this.logger.warn(`No valid ${orient} data -> scoring cross-orientation pool`, this.selectorName)
+                for (const entry of this.#fillCrossOrRandom(orient, needed, usedIds, usedPaths)) {
+                    selectedImages.push(entry)
                 }
                 continue
             }
@@ -344,11 +338,8 @@ export default class GeminiQwenSelector extends SelectorBase {
                 }
                 const stillNeeded = needed - found.length
                 if (stillNeeded > 0) {
-                    const fallback = this.randomSelector.selectSync({ [orient]: stillNeeded }, [...usedPaths])
-                    for (const s of fallback) {
-                        selectedImages.push(s)
-                        usedIds.add(s.image.id)
-                        usedPaths.add(s.image.path)
+                    for (const entry of this.#fillCrossOrRandom(orient, stillNeeded, usedIds, usedPaths)) {
+                        selectedImages.push(entry)
                     }
                 }
                 continue
@@ -369,6 +360,56 @@ export default class GeminiQwenSelector extends SelectorBase {
     }
 
     /**
+     * Fill slots the matching-orientation pool could not cover by continuing pairwise-harmony
+     * ranking over ALL orientations ("cross"), falling back to RandomSelector for any remainder.
+     * Cross picks are added to #selectedImages so subsequent anchors stay coherent.
+     */
+    #fillCrossOrRandom(orient, needed, usedIds, usedPaths) {
+        const allDistinct = [
+            ...this.db.findAllVerticalSync(),
+            ...this.db.findAllHorizontalSync(),
+            ...this.db.findAllSquareSync(),
+        ]
+        // Only rows gemini can actually score, minus anything already assigned
+        const crossPool = allDistinct.filter((img) => !usedPaths.has(img.path) && this.hasValidData(img))
+        const entries = []
+
+        if (crossPool.length > 0) {
+            this.logger.log(
+                `[CROSS] ${orient} pool exhausted -- harmony-scoring ${crossPool.length} cross-orientation candidates`,
+                this.selectorName
+            )
+            try {
+                const found = this.#pairwiseHarmonySelect(crossPool, usedPaths, needed, `${orient}-cross`) || []
+                for (const img of found) {
+                    if (!usedIds.has(img.id)) {
+                        entries.push({ image: img, orientation: orient })
+                        usedIds.add(img.id)
+                        // usedPaths already updated inside #pairwiseHarmonySelect
+                        this.#selectedImages.push(img)
+                    }
+                }
+            } catch (err) {
+                this.logger.warn(`[CROSS] scored pick failed (${err.message}) -- using random fallback`, this.selectorName)
+            }
+        } else {
+            this.logger.warn("No scoreable images anywhere -- falling back to random", this.selectorName)
+        }
+
+        // Random last resort for any remaining shortfall
+        const stillNeeded = needed - entries.length
+        if (stillNeeded > 0) {
+            const fallback = this.randomSelector.selectSync({ [orient]: stillNeeded }, [...usedPaths])
+            for (const s of fallback) {
+                entries.push(s)
+                usedIds.add(s.image.id)
+                usedPaths.add(s.image.path)
+            }
+        }
+        return entries
+    }
+
+    /**
      * Pick images from a pool using composite distance. Used by chain mode.
      * @param {Object} seed - The seed/reference image.
      * @param {string} orient - Target orientation.
@@ -378,7 +419,11 @@ export default class GeminiQwenSelector extends SelectorBase {
      * @returns {Object[]} Array of matching image objects.
      */
     pickImages(seed, orient, excludeIds, needed, poolIds = []) {
-        let pool = this.getPool(orient)
+        let pool = orient === "any" ? [
+            ...this.db.findAllVerticalSync(),
+            ...this.db.findAllHorizontalSync(),
+            ...this.db.findAllSquareSync(),
+        ] : this.getPool(orient)
 
         pool = pool.filter(img => {
             const isExcluded = excludeIds.includes(img.id) || excludeIds.includes(img.path)
@@ -402,7 +447,11 @@ export default class GeminiQwenSelector extends SelectorBase {
      * @returns {Object[]} Array of candidate images sorted by proximity to seed.
      */
     collectCandidates(seed, orient, excludeIds, poolIds = []) {
-        let pool = this.getPool(orient)
+        let pool = orient === "any" ? [
+            ...this.db.findAllVerticalSync(),
+            ...this.db.findAllHorizontalSync(),
+            ...this.db.findAllSquareSync(),
+        ] : this.getPool(orient)
         pool = pool.filter(img => {
             const isExcluded = excludeIds.includes(img.id) || excludeIds.includes(img.path)
             return !isExcluded && this.hasValidData(img)

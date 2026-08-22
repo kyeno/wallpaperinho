@@ -148,8 +148,8 @@ class ImageSelector {
             const availableInOrient = pool.filter((img) => !usedPaths.has(img.path))
 
             if (availableInOrient.length === 0) {
-                // Fallback to random for this orientation
-                const fallback = this.#fillRandom(counts, orient, needed, usedIds, usedPaths, selectedImages)
+                // No matching-orientation candidates -- score across orientations, then random
+                this.#fillCrossOrRandom(selectors, seed, counts, orient, needed, usedIds, usedPaths, selectedImages)
                 continue
             }
 
@@ -196,9 +196,9 @@ class ImageSelector {
 
             if (finalWithData.length === 0) {
                 this.logger.warn(
-                    `[CHAIN] No candidates with valid "${chain[selectors.length - 1]}" data -- fallback to random`, 'ImageSelector'
+                    `[CHAIN] No candidates with valid "${chain[selectors.length - 1]}" data -- scoring cross-orientation pool`, 'ImageSelector'
                 )
-                this.#fillRandom(counts, orient, needed, usedIds, usedPaths, selectedImages)
+                this.#fillCrossOrRandom(selectors, seed, counts, orient, needed, usedIds, usedPaths, selectedImages)
                 continue
             }
 
@@ -208,7 +208,7 @@ class ImageSelector {
                 this.logger.warn(
                     `[CHAIN] Original seed lacks valid "${chain[selectors.length - 1]}" data -- fallback to random`, 'ImageSelector'
                 )
-                this.#fillRandom(counts, orient, needed, usedIds, usedPaths, selectedImages)
+                this.#fillCrossOrRandom(selectors, seed, counts, orient, needed, usedIds, usedPaths, selectedImages)
                 continue
             }
 
@@ -226,11 +226,11 @@ class ImageSelector {
                 usedPaths.add(img.path)
             }
 
-            // Fill any shortfall with random fallback
+            // Fill any shortfall by scoring across orientations, then random as last resort
             const stillNeeded = needed - found.length
             if (stillNeeded > 0) {
-                this.logger.log(`[CHAIN] Shortfall ${stillNeeded} for ${orient}, filling randomly`, 'ImageSelector')
-                this.#fillRandom(counts, orient, stillNeeded, usedIds, usedPaths, selectedImages)
+                this.logger.log(`[CHAIN] Shortfall ${stillNeeded} for ${orient}, scoring cross-orientation pool`, 'ImageSelector')
+                this.#fillCrossOrRandom(selectors, seed, counts, orient, stillNeeded, usedIds, usedPaths, selectedImages)
             }
         }
 
@@ -245,6 +245,69 @@ class ImageSelector {
             usedIds.add(s.image.id)
             usedPaths.add(s.image.path)
         }
+    }
+
+    /**
+     * Fill slots an orientation pool could not cover by re-running the chain's own scoring
+     * across ALL orientations ("any"), degrading to random for whatever remains unfilled.
+     * @param {Object[]} selectors - Resolved selector instances for the chain (in order).
+     * @param {Object} seed - The global seed image.
+     * @param {{vertical: number, horizontal: number, square: number}} counts - Original request (for logging parity with #fillRandom).
+     * @param {string} orient - Requested orientation label; results are tagged with it.
+     * @param {number} stillNeeded - How many images are required.
+     * @param {Set<number>} usedIds - IDs already selected (mutated).
+     * @param {Set<string>} usedPaths - Paths already selected (mutated).
+     * @param {Array<{image: Object, orientation: string}>} selectedImages - Accumulator (mutated).
+     */
+    #fillCrossOrRandom(selectors, seed, counts, orient, stillNeeded, usedIds, usedPaths, selectedImages) {
+        let filled = 0
+        try {
+            const found = this.#pickChainAcrossOrientations(selectors, seed, [...usedIds], stillNeeded) || []
+            for (const img of found) {
+                if (!usedIds.has(img.id)) {
+                    selectedImages.push({ image: img, orientation: orient })
+                    usedIds.add(img.id)
+                    usedPaths.add(img.path)
+                    filled++
+                }
+            }
+        } catch (err) {
+            this.logger.warn(`[CHAIN][CROSS] scored cross-pick failed (${err.message}) -- using random`, 'ImageSelector')
+        }
+
+        const remaining = stillNeeded - filled
+        if (remaining > 0) {
+            this.#fillRandom(counts, orient, remaining, usedIds, usedPaths, selectedImages)
+        }
+    }
+
+    /**
+     * Run the chain's intermediate collect steps + final pick with orient="any" so that
+     * candidates from every orientation are scoreable. Returns [] when any step yields
+     * nothing or the strategy cannot rank an "any" pool.
+     * @param {Object[]} selectors - Resolved selector instances for the chain (in order).
+     * @param {Object} seed - The global seed image.
+     * @param {(number|string)[]} excludeIds - IDs/paths already selected.
+     * @param {number} needed - How many images to pick.
+     * @returns {Object[]} Raw DB rows picked across orientations.
+     */
+    #pickChainAcrossOrientations(selectors, seed, excludeIds, needed) {
+        const finalSel = selectors[selectors.length - 1]
+        // Cheap pre-check: no point running intermediates if the final step can't anchor on the seed
+        if (!finalSel || typeof finalSel.pickImages !== "function") return []
+        if (typeof finalSel.hasValidData === "function" && !finalSel.hasValidData(seed)) return []
+
+        let candidateIds = null
+        for (let i = 0; i < selectors.length - 1; i++) {
+            const sel = selectors[i]
+            if (typeof sel.collectCandidates !== "function") continue   // e.g., RandomSelector in a chain
+            this.logger.log(`[CHAIN][CROSS] Step ${i} (${sel.selectorName}) scoring all orientations`, 'ImageSelector')
+            const candidates = sel.collectCandidates(seed, "any", [...excludeIds], candidateIds || [])
+            if (!candidates || candidates.length === 0) return []
+            candidateIds = candidates.map((c) => c.id)
+        }
+
+        return finalSel.pickImages(seed, "any", [...excludeIds], needed, candidateIds || [])
     }
 
     /** Fetch the pool for a given orientation. */

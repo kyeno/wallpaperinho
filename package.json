@@ -12,7 +12,7 @@
   "main": "src/main.js",
   "scripts": {
     "start": "NODE_NO_WARNINGS=1 node src/main.js",
-    "test": "node tests/check-syntax.mjs && node tests/randomFallback.test.mjs && node tests/generatePipeline.test.mjs && node tests/upscaleLoop.test.mjs"
+    "test": "node tests/check-syntax.mjs && node tests/randomFallback.test.mjs && node tests/generatePipeline.test.mjs && node tests/upscaleLoop.test.mjs && node tests/crossOrientation.test.mjs"
   },
   "engines": {
     "node": ">=22.5.0"

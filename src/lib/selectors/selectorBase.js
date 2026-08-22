@@ -4,8 +4,9 @@
  *
  * Provides common orchestration logic for all strategy-based selectors except RandomSelector.
  * Picks a single random seed image from ALL pools upfront, then iterates orientations
- * finding similar images based on the subclass's metric. Falls back to RandomSelector
- * when an orientation pool is exhausted or lacks metric data.
+ * finding similar images based on the subclass's metric. When an orientation pool is
+ * exhausted or lacks metric data, continues this strategy's own ranking logic across
+ * ALL orientations before falling back to RandomSelector for any remaining shortfall.
  *
  * @author Ratan M. Kyeno
  * @license MIT
@@ -375,25 +376,19 @@ class SelectorBase {
                 `pool has ${available.length}, with data: ${poolWithData.length}`, this.selectorName
             )
 
-            // No candidates at all in this orientation -- fallback to random
+            // No candidates at all in this orientation -- score across orientations, then random
             if (available.length === 0) {
-                const fallback = this.randomSelector.selectSync({ [orient]: needed }, [...usedPaths])
-                for (const s of fallback) {
-                    selectedImages.push(s)
-                    usedIds.add(s.image.id)
-                    usedPaths.add(s.image.path)
+                for (const entry of this.#fillCrossOrRandom(seed, orient, needed, usedIds, usedPaths)) {
+                    selectedImages.push(entry)
                 }
                 continue
             }
 
-            // Candidates exist but none have metric data -- fallback to random
+            // Candidates exist but none have metric data -- score across orientations, then random
             if (poolWithData.length === 0) {
-                this.logger.warn(`No ${orient} candidates have valid data -- falling back to random`, this.selectorName)
-                const fallback = this.randomSelector.selectSync({ [orient]: needed }, [...usedPaths])
-                for (const s of fallback) {
-                    selectedImages.push(s)
-                    usedIds.add(s.image.id)
-                    usedPaths.add(s.image.path)
+                this.logger.warn(`No ${orient} candidates have valid data -- scoring cross-orientation pool`, this.selectorName)
+                for (const entry of this.#fillCrossOrRandom(seed, orient, needed, usedIds, usedPaths)) {
+                    selectedImages.push(entry)
                 }
                 continue
             }
@@ -411,11 +406,8 @@ class SelectorBase {
                 }
                 const stillNeeded = needed - found.length
                 if (stillNeeded > 0) {
-                    const fallback = this.randomSelector.selectSync({ [orient]: stillNeeded }, [...usedPaths])
-                    for (const s of fallback) {
-                        selectedImages.push(s)
-                        usedIds.add(s.image.id)
-                        usedPaths.add(s.image.path)
+                    for (const entry of this.#fillCrossOrRandom(seed, orient, stillNeeded, usedIds, usedPaths)) {
+                        selectedImages.push(entry)
                     }
                 }
                 continue
@@ -431,6 +423,61 @@ class SelectorBase {
         }
 
         return selectedImages
+    }
+
+    /**
+     * Fill slots that the matching-orientation pool could not cover by continuing THIS
+     * strategy's own ranking logic across ALL orientations ("any"), falling back to
+     * RandomSelector only for whatever remains unfilled. Mutates usedIds/usedPaths as picks land.
+     * @param {Object} seed - The seed image (must have valid data for this strategy).
+     * @param {string} orient - Requested orientation label; results are tagged with it and it is used in logs.
+     * @param {number} needed - How many images are required.
+     * @param {Set<number>} usedIds - IDs already selected (mutated).
+     * @param {Set<string>} usedPaths - Paths already selected (mutated).
+     * @returns {{image: Object, orientation: string}[]} Entries tagged with `orient`.
+     */
+    #fillCrossOrRandom(seed, orient, needed, usedIds, usedPaths) {
+        const allDistinct = [
+            ...this.db.findAllVerticalSync(),
+            ...this.db.findAllHorizontalSync(),
+            ...this.db.findAllSquareSync(),
+        ]
+        // Only rows this strategy can actually score, minus anything already assigned
+        const crossPool = allDistinct.filter((img) => !usedPaths.has(img.path) && this.hasValidData(img))
+        const entries = []
+
+        if (crossPool.length > 0) {
+            this.logger.log(
+                `[CROSS] ${orient} pool exhausted -- scoring ${crossPool.length} cross-orientation candidates`,
+                this.selectorName
+            )
+            try {
+                const found = this.pickImages(seed, "any", [...usedIds], needed, crossPool.map((i) => i.id)) || []
+                for (const img of found) {
+                    if (!usedIds.has(img.id)) {
+                        entries.push({ image: img, orientation: orient })
+                        usedIds.add(img.id)
+                        usedPaths.add(img.path)
+                    }
+                }
+            } catch (err) {
+                this.logger.warn(`[CROSS] scored pick failed (${err.message}) -- using random fallback`, this.selectorName)
+            }
+        } else {
+            this.logger.warn("No scoreable images anywhere -- falling back to random", this.selectorName)
+        }
+
+        // Random last resort for any remaining shortfall
+        const stillNeeded = needed - entries.length
+        if (stillNeeded > 0) {
+            const fallback = this.randomSelector.selectSync({ [orient]: stillNeeded }, [...usedPaths])
+            for (const s of fallback) {
+                entries.push(s)
+                usedIds.add(s.image.id)
+                usedPaths.add(s.image.path)
+            }
+        }
+        return entries
     }
 
     /**
