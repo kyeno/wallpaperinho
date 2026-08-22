@@ -91,44 +91,64 @@ class WallpaperGenerator {
             return null
         }
 
-        // Group selections by orientation, sorted biggest-first for best-fit assignment
+        // Group selections by orientation for best-fit assignment
         // Preserve _isSeed flag from chain mode so debug overlay knows which image was the seed
         const seedImageIds = new Set()
         const poolByOrientation = { vertical: [], horizontal: [], square: [] }
         for (const s of selectedImages) {
-            if (s.orientation in poolByOrientation) {
-                if (s._isSeed) seedImageIds.add(s.image.id)
-                poolByOrientation[s.orientation].push(s.image)
+            if (!(s.orientation in poolByOrientation)) continue
+            const img = s.image
+            // Defense-in-depth: drop malformed selections instead of crashing deep in ImageMagick later
+            if (!img || typeof img.path !== "string" || !Number.isFinite(img.width) || !Number.isFinite(img.height)) {
+                this.logger.warn(
+                    `Dropping malformed ${s.orientation} selection: ${JSON.stringify(s).slice(0, 200)}`,
+                    'WallpaperGenerator'
+                )
+                continue
             }
+            if (s._isSeed) seedImageIds.add(img.id)
+            poolByOrientation[s.orientation].push(img)
         }
         this.logger.debug(`Seed image IDs captured: ${seedImageIds.size > 0 ? [...seedImageIds].join(", ") : "(none)"}`, 'WallpaperGenerator')
 
-        for (const list of Object.values(poolByOrientation)) {
-            list.sort((a, b) => b.width * b.height - a.width * a.height)
-        }
-
-        // Assign biggest image to biggest display within each orientation group
+        // Assign images to displays within each orientation group.
+        // Best-fit by aspect-ratio distance (minimal crop/distortion), tie-broken by pixel area --
+        // this also ranks cross-orientation fallback images sensibly (e.g., a near-square source
+        // is preferred over an extreme portrait for a landscape slot).
         const orientGroups = { vertical: [], horizontal: [], square: [] }
         for (const slot of slots) {
             orientGroups[slot.orientation].push(slot)
         }
-        // Sort each group by pixel area descending
+        // Sort each group by pixel area descending so the biggest display gets first pick
         for (const list of Object.values(orientGroups)) {
             list.sort((a, b) => b.pixelArea - a.pixelArea)
         }
 
         for (const orient of ["vertical", "horizontal", "square"]) {
             const slotList = orientGroups[orient]
-            const imgPool = poolByOrientation[orient]
-            for (let i = 0; i < slotList.length; i++) {
-                if (i < imgPool.length) {
-                    slotList[i].assignedImage = imgPool[i]
+            const free = [...poolByOrientation[orient]]
+            for (const slot of slotList) {
+                let bestIdx = -1
+                let bestScore = Infinity
+                let bestArea = -1
+                for (let i = 0; i < free.length; i++) {
+                    const score = this.#aspectDistance(free[i], slot)
+                    const area = free[i].width * free[i].height
+                    if (score < bestScore || (score === bestScore && area > bestArea)) {
+                        bestScore = score
+                        bestArea = area
+                        bestIdx = i
+                    }
+                }
+                if (bestIdx >= 0) {
+                    const [img] = free.splice(bestIdx, 1)
+                    slot.assignedImage = img
                     // Propagate _isSeed flag so annotate() can display it
-                    slotList[i]._isSeed = seedImageIds.has(imgPool[i].id)
+                    slot._isSeed = seedImageIds.has(img.id)
                 } else {
                     this.logger.warn(
                         `No ${orient} image available for ` +
-                        `display ${slotList[i].displayIndex}`, 'WallpaperGenerator'
+                        `display ${slot.displayIndex}`, 'WallpaperGenerator'
                     )
                 }
             }
@@ -220,6 +240,21 @@ class WallpaperGenerator {
     }
 
     /**
+     * Aspect-ratio distance between an image and a target slot (log domain).
+     * Lower is better -- 0 means identical aspect ratio (no crop waste).
+     * @param {{width: number, height: number}} img - Image record.
+     * @param {Slot} slot - Display slot with target dimensions.
+     * @returns {number} Non-negative distance; Infinity when either side has invalid dims.
+     */
+    #aspectDistance(img, slot) {
+        if (!img || !Number.isFinite(img.width) || !Number.isFinite(img.height) ||
+            img.width <= 0 || img.height <= 0 || slot.width <= 0 || slot.height <= 0) {
+            return Infinity
+        }
+        return Math.abs(Math.log((img.width / img.height) / (slot.width / slot.height)))
+    }
+
+    /**
      * Process a single display slot: upscale if needed, fit-exact resize, annotate.
      * Expects slot.assignedImage to already be populated.
      * @param {Slot} slot - Display slot with assignedImage set.
@@ -242,24 +277,25 @@ class WallpaperGenerator {
         const outputPath = path.join(outputDir, `${runPrefix}-display${id}.jpg`)
         let currentPath = chosen.path
         let upscaled = false
+        let upscalePasses = 0
         let origW = chosen.width
         let origH = chosen.height
         let upscaleW = null
         let upscaleH = null
 
-        // Conditional upscaling -- intermediates go to TEMP_DIR with prefixed names
+        // Iterative NCNN upscaling -- chain passes until within tolerance of target size;
+        // without NCNN the input is used as-is and ImageMagick closes the gap in fitExact()
         if (this.imageProcessor.isNcnnAvailable()) {
-            const shouldScale = this.imageProcessor.shouldUpscale(
-                chosen.path, chosen.width, chosen.height, width, height
+            const baseName = path.join(outputDir, `${runPrefix}-upscale${id}`)
+            const result = await this.imageProcessor.upscaleToTarget(
+                chosen.path, baseName, width, height
             )
-            if (shouldScale) {
-                const tmpPath = path.join(outputDir, `${runPrefix}-upscale${id}.png`)
-                await this.imageProcessor.upscale(chosen.path, tmpPath)
-                upscaleTempFiles.push(tmpPath)
-                const dims = this.imageProcessor.getDimensions(tmpPath)
-                upscaleW = dims.width
-                upscaleH = dims.height
-                currentPath = tmpPath
+            if (result.passes > 0) {
+                for (const f of result.intermediates) upscaleTempFiles.push(f)
+                currentPath = result.path
+                upscaleW = result.width
+                upscaleH = result.height
+                upscalePasses = result.passes
                 upscaled = true
             }
         }
@@ -282,6 +318,7 @@ class WallpaperGenerator {
                 originalHeight: origH,
                 upscaledWidth: upscaleW,
                 upscaledHeight: upscaleH,
+                upscalePasses,
                 upscalerModel: this.config.settings.ncnnUpscalerModel,
                 isSeed,
                 ...hsl,

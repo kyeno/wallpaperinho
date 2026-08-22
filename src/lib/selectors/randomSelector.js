@@ -111,7 +111,7 @@ class RandomSelector {
             const fallbackResults = this.#fallbackAcrossOrientations(
                 allDistinctImages, usedPaths, fallbackCount, orient
             )
-            return [...picked, ...fallbackResults.map((r) => r.image)]
+            return [...picked, ...fallbackResults]
         }
 
         return this.#randomPick(available, needed, orient)
@@ -125,7 +125,7 @@ class RandomSelector {
      * @param {Set<string>} usedPaths - Paths already assigned.
      * @param {number} needed - How many more we need.
      * @param {string} orient - Orientation that triggered the fallback (for logging).
-     * @returns {Array<{image: Object}>} Fallback selections.
+     * @returns {Array<Object>} Raw image records (same shape as DB rows).
      */
     #fallbackAcrossOrientations(allDistinctImages, usedPaths, needed, orient) {
         // Count truly-available candidates across ALL orientations after exclusions
@@ -133,8 +133,7 @@ class RandomSelector {
 
         if (totalAvailable === 0) {
             this.logger.warn(`All pools exhausted for ${orient}, allowing duplicates`, 'RandomSelector')
-            const picked = this.#randomPick(allDistinctImages, needed, `${orient}-dup-fallback`)
-            return picked.map((img) => ({ image: img }))
+            return this.#randomPick(allDistinctImages, needed, `${orient}-dup-fallback`)
         }
 
         this.logger.log(
@@ -154,13 +153,10 @@ class RandomSelector {
             // Take what we got and duplicate-randomly-pick the rest
             const shortfall = needed - dbTotal
             const dupPicks = this.#randomPick(allDistinctImages, shortfall, `${orient}-dup-fill`)
-            return [
-                ...results.map((img) => ({ image: img })),
-                ...dupPicks.map((img) => ({ image: img })),
-            ]
+            return [...results, ...dupPicks]
         }
 
-        return results.map((img) => ({ image: img }))
+        return results
     }
 
     /**

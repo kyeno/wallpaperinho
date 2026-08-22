@@ -115,7 +115,25 @@ Set the following configuration properties in `etc/config.js` to enable AI upsca
 | `ncnnUpscalerModel` | Model name without extension (e.g., `"4xNomos8kSC"`). |
 | `ncnnUpscalerScale` | Upscale factor as a string (e.g., `"4"`). |
 | `ncnnUpscalerFlags` | Optional free-form string of extra flags (shell-split before input/output args), e.g., `"-g 0"`. |
+| `ncnnUpscaleTolerance` | Iterative-upscale stop threshold (default `"0.95"`): passes are chained until both dimensions reach at least this fraction of the target display size. |
+| `ncnnMaxUpscalePasses` | Safety cap on chained NCNN passes per display (default `3`). |
 
 The actual command-line arguments are assembled automatically from these properties at runtime via `config.getNcnnUpscalerCommand(inputPath, outputPath)`. You can also override any of these values per-profile in `etc/profiles.js`.
 
 When configured, the image processor will automatically route images through the ncnn upscaler before compositing the final wallpaper.
+
+### Iterative Upscaling
+
+Because each profile pins a **fixed scale factor** (`-s`, matching the model's trained resolution), a single pass is not always enough for small sources: a 512×768 photo assigned to a 2560-wide slot would still be ~25% short after one ×4 pass, leaving ImageMagick to do an ugly stretch.
+
+Wallpaperinho therefore chains NCNN passes **in a loop**: it keeps running the upscaler as long as either dimension is below `ncnnUpscaleTolerance` × target size (default 95%), stopping once ImageMagick only needs to close a small gap during its cover-resize + center-crop step. Each intermediate file is written to the temp directory and cleaned up afterwards; a no-op pass (size did not grow) aborts the chain early, and `ncnnMaxUpscalePasses` caps total GPU work.
+
+Behavior matrix:
+
+| Situation | What happens |
+|-----------|--------------|
+| Image already ≥ tolerance of both target dims | No NCNN pass at all — straight to fit-exact resize/crop |
+| NCNN configured, image smaller than needed | Chained NCNN passes until within tolerance, then ImageMagick closes the ≤5% gap |
+| NCNN disabled (`ncnnUpscalerBin: ""`) or binary missing | ImageMagick does the full upscale itself (works, but visibly softer on large gaps) |
+
+> **Tradeoff note:** with the default 0.95 tolerance, even a slight shortfall (e.g., 2400 px wide for a 2560 slot) triggers a full GPU pass producing a much larger intermediate. If that feels wasteful, lower `ncnnUpscaleTolerance` (e.g., `"0.7"`) so NCNN kicks in only when ImageMagick would really struggle.

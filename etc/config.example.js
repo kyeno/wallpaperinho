@@ -101,4 +101,15 @@ export const config = {
 
     /** Free-form flags appended to the upscaler command (e.g., "-g 0") */
     ncnnUpscalerFlags: "-g 0",
+
+    /**
+     * Iterative upscaling stop threshold (0.0-1.0). NCNN passes are chained until BOTH
+     * dimensions reach at least this fraction of the target display size; ImageMagick
+     * then closes the remaining gap during fit-exact resize/crop. Lower values save GPU
+     * time but leave more scaling to ImageMagick (more visible softness on small sources).
+     */
+    ncnnUpscaleTolerance: "0.95",
+
+    /** Maximum chained NCNN passes per display before falling back to ImageMagick scaling */
+    ncnnMaxUpscalePasses: 3,
 }

@@ -274,7 +274,8 @@ class ImageProcessor {
 
         if (info.upscaled && info.upscaledWidth != null && info.upscaledHeight != null) {
             const modelLabel = info.upscalerModel ? ` (${info.upscalerModel})` : ""
-            lines.push(`upscale: ${info.upscaledWidth}x${info.upscaledHeight}${modelLabel}`)
+            const passLabel = Number(info.upscalePasses) > 1 ? `, ${info.upscalePasses} passes` : ""
+            lines.push(`upscale: ${info.upscaledWidth}x${info.upscaledHeight}${passLabel}${modelLabel}`)
         } else {
             lines.push(`upscale: no`)
         }
@@ -394,6 +395,14 @@ class ImageProcessor {
             return
         }
 
+        // Fail fast with a clear message instead of letting the binary choke on bad input
+        if (!inputPath || typeof inputPath !== "string") {
+            throw new Error(`NCNN upscale: invalid input path (${String(inputPath)})`)
+        }
+        if (!fs.existsSync(inputPath)) {
+            throw new Error(`NCNN upscale: input file not found: ${inputPath}`)
+        }
+
         const args = this.config.getNcnnUpscalerCommand(inputPath, outputPath)
         if (args.length === 0) {
             this.logger.warn('No NCNN arguments available. Skipping upscale.', 'ImageProcessor')
@@ -401,8 +410,90 @@ class ImageProcessor {
         }
 
         this.logger.debug(`Running ncnn upscale: ${bin} ${args.join(" ")}`, 'ImageProcessor')
-        await execFileAsync(bin, args)
+        try {
+            await execFileAsync(bin, args)
+        } catch (err) {
+            const detail = [err.message, err.stderr?.toString().trim()]
+                .filter(Boolean).join(" | ").slice(0, 500)
+            throw new Error(`NCNN upscaler failed for ${inputPath}: ${detail}`)
+        }
+
+        // realesrgan-ncnn-vulkan can exit 0 without writing anything -- verify before trusting it
+        if (!fs.existsSync(outputPath)) {
+            throw new Error(`NCNN upscaler produced no output at ${outputPath} (input: ${inputPath})`)
+        }
+
         this.logger.log(`Upscaled ${inputPath} -> ${outputPath}`, 'ImageProcessor')
+    }
+
+    /**
+     * Iteratively upscale an image with NCNN until BOTH dimensions reach at least
+     * `ncnnUpscaleTolerance` (default 95%) of the target size. Each pass applies the
+     * profile's fixed scale factor (`ncnnUpscalerScale`), so small sources may chain
+     * multiple passes; ImageMagick then only needs to close a small gap in fitExact().
+     * Without a usable NCNN setup the input is returned unchanged (passes=0) and the
+     * remaining scaling is left to ImageMagick.
+     * @param {string} inputPath - Source image path.
+     * @param {string} outputPathBase - Base name for intermediates; pass N writes `${base}-p${N}.png`.
+     * @param {number} targetWidth - Target width in pixels.
+     * @param {number} targetHeight - Target height in pixels.
+     * @returns {Promise<{path: string, passes: number, width: number, height: number, intermediates: string[]}>}
+     *   Final path plus statistics. `intermediates` lists temp files the caller must clean up.
+     */
+    async upscaleToTarget(inputPath, outputPathBase, targetWidth, targetHeight) {
+        const s = this.config?.settings ?? {}
+
+        let tolerance = parseFloat(s.ncnnUpscaleTolerance)
+        if (!Number.isFinite(tolerance) || tolerance <= 0 || tolerance > 1) tolerance = 0.95
+
+        let maxPasses = parseInt(s.ncnnMaxUpscalePasses, 10)
+        if (!Number.isInteger(maxPasses) || maxPasses < 1) maxPasses = 3
+
+        // Measure real dimensions -- trusted over values passed from elsewhere
+        let dims = this.getDimensions(inputPath)
+
+        const minW = Math.ceil(targetWidth * tolerance)
+        const minH = Math.ceil(targetHeight * tolerance)
+
+        if (dims.width >= minW && dims.height >= minH) {
+            this.logger.log(
+                `No NCNN pass needed: ${dims.width}x${dims.height} already within ` +
+                `${Math.round(tolerance * 100)}% of target ${targetWidth}x${targetHeight}`, 'ImageProcessor'
+            )
+            return { path: inputPath, passes: 0, width: dims.width, height: dims.height, intermediates: [] }
+        }
+
+        this.logger.log(
+            `NCNN iterative upscale: ${dims.width}x${dims.height} -> need >= ${minW}x${minH} ` +
+            `(tolerance=${tolerance}, max ${maxPasses} pass(es))`, 'ImageProcessor'
+        )
+
+        let curPath = inputPath
+        const intermediates = []
+        let passes = 0
+
+        while ((dims.width < minW || dims.height < minH) && passes < maxPasses) {
+            passes++
+            const out = `${outputPathBase}-p${passes}.png`
+            await this.upscale(curPath, out)
+            const next = this.getDimensions(out)
+
+            // Guard against a no-op pass (e.g., scale factor effectively 1) -- avoid spinning
+            if (next.width <= dims.width && next.height <= dims.height) {
+                this.logger.warn(
+                    `NCNN pass did not increase size (${dims.width}x${dims.height}) -- stopping early`,
+                    'ImageProcessor'
+                )
+                break
+            }
+
+            dims = next
+            curPath = out
+            intermediates.push(out)
+            this.logger.log(`NCNN pass ${passes}/${maxPasses} done: now ${dims.width}x${dims.height}`, 'ImageProcessor')
+        }
+
+        return { path: curPath, passes, width: dims.width, height: dims.height, intermediates }
     }
 
     /**

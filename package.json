@@ -3,17 +3,17 @@
   "name": "wallpaperinho",
   "version": "0.1.0-dev",
   "description": "Multi-monitor wallpaper automation with smart image selection, AI upscaling, and compositing for Linux desktops",
-  "main": "src/main.js",
-  "scripts": {
-    "start": "NODE_NO_WARNINGS=1 node src/main.js",
-    "test": "node tests/check-syntax.mjs"
-  },
   "keywords": [],
   "author": {
     "name": "Ratan M. Kyeno",
     "email": "matt@prayam.com"
   },
   "license": "MIT",
+  "main": "src/main.js",
+  "scripts": {
+    "start": "NODE_NO_WARNINGS=1 node src/main.js",
+    "test": "node tests/check-syntax.mjs && node tests/randomFallback.test.mjs && node tests/generatePipeline.test.mjs && node tests/upscaleLoop.test.mjs"
+  },
   "engines": {
     "node": ">=22.5.0"
   },
