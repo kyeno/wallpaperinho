@@ -239,7 +239,7 @@ class ImageSelector {
 
     /** Fill remaining slots using RandomSelector fallback. */
     #fillRandom(counts, orient, stillNeeded, usedIds, usedPaths, selectedImages) {
-        const fallback = this.selectors.random.selectSync({ [orient]: stillNeeded })
+        const fallback = this.selectors.random.selectSync({ [orient]: stillNeeded }, [...usedPaths])
         for (const s of fallback) {
             selectedImages.push(s)
             usedIds.add(s.image.id)

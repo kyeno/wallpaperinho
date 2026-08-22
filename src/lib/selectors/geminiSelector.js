@@ -307,7 +307,7 @@ export default class GeminiQwenSelector extends SelectorBase {
 
             // No candidates at all in this orientation -- fallback to random
             if (available.length === 0) {
-                const fallback = this.randomSelector.selectSync({ [orient]: needed })
+                const fallback = this.randomSelector.selectSync({ [orient]: needed }, [...usedPaths])
                 for (const s of fallback) {
                     selectedImages.push(s)
                     usedIds.add(s.image.id)
@@ -319,7 +319,7 @@ export default class GeminiQwenSelector extends SelectorBase {
             // Candidates exist but none have metric data -- fallback to random
             if (poolWithData.length === 0) {
                 this.logger.warn(`No valid ${orient} data -> random fallback`, this.selectorName)
-                const fallback = this.randomSelector.selectSync({ [orient]: needed })
+                const fallback = this.randomSelector.selectSync({ [orient]: needed }, [...usedPaths])
                 for (const s of fallback) {
                     selectedImages.push(s)
                     usedIds.add(s.image.id)
@@ -344,7 +344,7 @@ export default class GeminiQwenSelector extends SelectorBase {
                 }
                 const stillNeeded = needed - found.length
                 if (stillNeeded > 0) {
-                    const fallback = this.randomSelector.selectSync({ [orient]: stillNeeded })
+                    const fallback = this.randomSelector.selectSync({ [orient]: stillNeeded }, [...usedPaths])
                     for (const s of fallback) {
                         selectedImages.push(s)
                         usedIds.add(s.image.id)

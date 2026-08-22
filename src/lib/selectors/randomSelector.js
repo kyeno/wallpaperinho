@@ -35,18 +35,20 @@ class RandomSelector {
      * @param {{vertical: number, horizontal: number, square: number}} counts - Required image counts per orientation.
      * @returns {Array<{image: Object, orientation: string}>} Selected images with their orientations.
      */
-    async select(counts) {
-        return this.selectSync(counts)
+    async select(counts, excludePaths = []) {
+        return this.selectSync(counts, excludePaths)
     }
 
     /**
      * Synchronous version of select(). Used as fallback by other selectors.
      * @param {{vertical: number, horizontal: number, square: number}} counts - Required image counts per orientation.
+     * @param {string[]} [excludePaths=[]] - Paths already assigned elsewhere (e.g., a seed or picks from another strategy); never returned while alternatives exist.
      * @returns {Array<{image: Object, orientation: string}>} Selected images with their orientations.
      */
-    selectSync(counts) {
+    selectSync(counts, excludePaths = []) {
         const selectedImages = []
-        const usedPaths = new Set()
+        // Seed the exclusion set so cross-orientation fallback cannot reuse images the caller already picked
+        const usedPaths = new Set(excludePaths.filter((p) => typeof p === "string" && p))
 
         // Collect all distinct images upfront so we can exclude them across strategies
         const allDistinctImages = [
@@ -150,9 +152,12 @@ class RandomSelector {
                 `Only ${dbTotal}/${needed} images found in cross-orientation pool, ` +
                 `allowing duplicates to fill remaining slots`, 'RandomSelector'
             )
-            // Take what we got and duplicate-randomly-pick the rest
+            // Take what we got; fill the rest preferring not-yet-used images,
+            // allowing true duplicates only when nothing else remains
             const shortfall = needed - dbTotal
-            const dupPicks = this.#randomPick(allDistinctImages, shortfall, `${orient}-dup-fill`)
+            const freshPool = allDistinctImages.filter((img) => !usedPaths.has(img.path))
+            const poolForDups = freshPool.length > 0 ? freshPool : allDistinctImages
+            const dupPicks = this.#randomPick(poolForDups, shortfall, `${orient}-dup-fill`)
             return [...results, ...dupPicks]
         }
 

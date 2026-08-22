@@ -113,6 +113,37 @@ try {
         }
     })
 
+
+    // Case D -- caller-provided exclusions are honored deterministically:
+    // with v1+v2 pre-excluded, only v3 can fill the horizontal slot.
+    await runCase("caller exclusions (seed/picks from other strategies) are honored", async () => {
+        const selector = new RandomSelector(db, configStub, quietLogger)
+        const picked = selector.selectSync(
+            { vertical: 0, horizontal: 1, square: 0 },
+            ["/fake/v1.jpg", "/fake/v2.jpg"]
+        )
+        assert.equal(picked.length, 1)
+        assertValidEntry(picked[0], "exclusion-respecting fallback")
+        assert.equal(picked[0].image.path, "/fake/v3.jpg",
+            "only non-excluded candidate must be selected")
+    })
+
+    // Case E -- the reported duplicate-pick scenario: a seed image is already used elsewhere,
+    // one vertical slot gets filled, then the horizontal slot falls back cross-orientation;
+    // no image may appear twice and the seed must not be re-picked.
+    await runCase("no duplicates across strategy picks + random fallback (reported bug)", async () => {
+        const selector = new RandomSelector(db, configStub, quietLogger)
+        const picked = selector.selectSync(
+            { vertical: 1, horizontal: 1, square: 0 },
+            ["/fake/v1.jpg"]   // e.g., the gemini seed already assigned to another slot
+        )
+        assert.equal(picked.length, 2)
+        for (const entry of picked) assertValidEntry(entry, "mixed pick")
+        const paths = picked.map((e) => e.image.path)
+        assert.equal(new Set(paths).size, 2, `duplicate selection detected: ${paths.join(", ")}`)
+        assert.ok(!paths.includes("/fake/v1.jpg"), "already-used seed image was picked again")
+    })
+
     await db.close()
 } catch (err) {
     failures++

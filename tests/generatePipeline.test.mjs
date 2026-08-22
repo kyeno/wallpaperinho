@@ -139,7 +139,8 @@ try {
         ncnnUpscalerFlags: "-g 0",
         ncnnUpscaleTolerance: "0.95",
         ncnnMaxUpscalePasses: 3,
-        imageMatchingStrategy: "random",
+        // Use the real default strategy so seed + harmony picks + cross-orientation fallback are exercised
+        imageMatchingStrategy: "gemini",
     }
     const config = makeConfig(settings)
 
@@ -147,10 +148,16 @@ try {
     const dbPath = path.join(workDir, "images.sqlite3")
     const db = new DatabaseService(dbPath, logger)
     await db.initialize()
-    for (const s of sources) {
-        const p = path.join(srcDir, s.name)
+    // Distinct metric values per image so gemini's harmony ranking has something to work with
+    const metrics = [
+        { hue: 210, saturation: 30, lightness: 40, contrast: 40, canny: 8, entropy: 5.1 },
+        { hue: 220, saturation: 25, lightness: 45, contrast: 45, canny: 9, entropy: 5.2 },
+        { hue: 230, saturation: 20, lightness: 50, contrast: 50, canny: 7, entropy: 5.3 },
+    ]
+    for (let i = 0; i < sources.length; i++) {
+        const p = path.join(srcDir, sources[i].name)
         await db.insertImage({
-            path: p, width: 1024, height: 1536, filesize: fs.statSync(p).size,
+            path: p, width: 1024, height: 1536, filesize: fs.statSync(p).size, ...metrics[i],
         })
     }
 
@@ -197,6 +204,15 @@ try {
     )
     assert.equal(badLines.length, 0, `found undefined-source log lines: ${badLines.join(" | ")}`)
     console.log("  ✓ no 'undefined' image references in pipeline logs")
+
+    // The reported bug: under gemini strategy the same image was assigned twice when a slot
+    // fell back cross-orientation. With exactly N sources and N slots, all must be distinct.
+    const sourceLines = messages.filter((m) => m.startsWith("Source: "))
+    assert.equal(sourceLines.length, DISPLAYS.length, `expected ${DISPLAYS.length} "Source:" lines, got ${sourceLines.length}`)
+    const srcNames = sourceLines.map((l) => l.replace(/^Source: /, "").split("/").pop())
+    assert.equal(new Set(srcNames).size, DISPLAYS.length,
+        `duplicate source images assigned to displays: ${srcNames.join(", ")}`)
+    console.log(`  ✓ all ${DISPLAYS.length} displays received distinct source images (gemini strategy)` )
 
     if (ncnnAvailable) {
         // Upscale intermediates must have been cleaned up from the temp dir
