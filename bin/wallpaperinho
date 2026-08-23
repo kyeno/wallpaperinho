@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # wallpaperinho - Main entry point for the Wallpaperinho application.
 # Resolves the project root and launches src/main.js with all CLI arguments.
+# When invoked outside a graphical session (e.g., under cron), missing display
+# and session environment variables are inherited from an active GUI session
+# owned by this user so desktop integration works out of the box.
 #
 # @author Ratan M. Kyeno
 # @license MIT
@@ -12,5 +15,111 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 export NODE_NO_WARNINGS=1
+
+# ========================
+# Display session bootstrap
+# ========================
+# Cron jobs start with a minimal environment that lacks display/session
+# variables such as XDG_CURRENT_DESKTOP, DISPLAY or DBUS_SESSION_BUS_ADDRESS.
+# Those are injected by the display manager into graphical login sessions at
+# login time -- they do not live in any profile script, so even `bash -l` will
+# not find them. To make plain crontab entries work without extra plumbing,
+# each missing variable is inherited from one of our own processes belonging
+# to an active GUI session (/proc/<pid>/environ is readable for same-user
+# processes only). Variables already present in the caller's environment always
+# take precedence and are never clobbered. If no GUI session exists (headless),
+# nothing is inherited and the application falls back to its normal warnings.
+
+inherit_display_session() {
+    local whitelist=(
+        "XDG_CURRENT_DESKTOP"
+        "DISPLAY"
+        "WAYLAND_DISPLAY"
+        "DBUS_SESSION_BUS_ADDRESS"
+        "XDG_RUNTIME_DIR"
+        "XAUTHORITY"
+    )
+
+    # Collect the variables we actually need to fill in
+    local needed=() key value
+    for key in "${whitelist[@]}"; do
+        if [[ -z "${!key:-}" ]]; then
+            needed+=("$key")
+        fi
+    done
+    (( ${#needed[@]} > 0 )) || return 0   # complete environment: normal desktop use
+
+    # Locate a process that belongs to a graphical session: its environ must
+    # carry XDG_CURRENT_DESKTOP. Unreadable entries (other users' processes)
+    # are skipped silently; races with dying processes are tolerated. The first
+    # match found acts as fallback; long-lived desktop shell/daemon processes
+    # are preferred when present so diagnostics point at something meaningful.
+    local best_file="" best_comm="" cpid ccomm
+    for environ_file in /proc/[0-9]*/environ; do
+        [[ -r "$environ_file" ]] || continue
+        if ! grep -qz '^XDG_CURRENT_DESKTOP=' "$environ_file" 2>/dev/null; then
+            continue
+        fi
+        cpid="${environ_file#/proc/}"
+        cpid="${cpid%/environ}"
+        ccomm="$(cat "/proc/$cpid/comm" 2>/dev/null || echo "unknown")"
+        if [[ -z "$best_file" ]]; then
+            best_file="$environ_file"
+            best_comm="$ccomm"
+        fi
+        case "$ccomm" in
+            *cinnamon*|*mutter*|*gnome-shell*|*plasmashell*|*hyprland*|*xfwm4*)
+                best_file="$environ_file"
+                best_comm="$ccomm"
+                break ;;
+        esac
+    done
+    [[ -n "$best_file" && -f "$best_file" ]] || return 0   # no GUI session available (headless)
+
+    local pid comm inherited_list="" line
+    pid="${best_file#/proc/}"
+    pid="${pid%/environ}"
+    comm="$best_comm"
+
+    while IFS= read -r -d '' line || [[ -n "$line" ]]; do
+        for key in "${needed[@]}"; do
+            if [[ "$line" == "$key="* ]]; then
+                value="${line#"$key="}"
+                if [[ -n "$value" ]]; then
+                    export "$key=$value"
+                    if [[ -z "$inherited_list" ]]; then
+                        inherited_list="$key"
+                    else
+                        inherited_list+=", $key"
+                    fi
+                fi
+            fi
+        done
+    done < "$environ_file"
+
+    [[ -n "$inherited_list" ]] || return 0
+    printf '[wallpaperinho] Running without a full display session environment -- inherited %s from pid %s (%s)\n' \
+        "$inherited_list" "$pid" "$comm" >&2
+}
+
+inherit_display_session
+
+# ========================
+# Single-instance guard
+# ========================
+# Long runs (AI upscaling) can outlive a tight cron interval. Rather than let
+# overlapping instances clobber each other's temp files, catalog state or
+# wallpaper output, a new invocation skips itself while another instance of
+# this user still holds the lock. The fd stays open across exec, so Node keeps
+# holding it until process exit releases it automatically. On systems without
+# flock(1) the guard is skipped entirely rather than breaking execution.
+if command -v flock >/dev/null 2>&1; then
+    LOCK_FILE="${TMPDIR:-${XDG_RUNTIME_DIR:-/tmp}}/wallpaperinho-$(id -u).lock"
+    exec 9>"$LOCK_FILE"
+    if ! flock -n 9; then
+        printf '[wallpaperinho] Another instance is already running -- skipping this run.\n' >&2
+        exit 0
+    fi
+fi
 
 exec node "$PROJECT_ROOT/src/main.js" "$@"

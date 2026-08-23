@@ -59,7 +59,7 @@ Wallpaper management for non-Cinnamon environments is provided on a best-effort 
 
 Wallpaperinho is designed to be lean, relying heavily on Node.js built-in modules to avoid unnecessary dependency bloat. Because it indexes file parameters natively into local SQLite databases, it easily manages directories containing tens of thousands of images.
 
-It can easily be thrown into a `crontab` to periodically cycle wallpapers, though keep in mind it will briefly wake up your CPU/GPU hardware if AI upscaling or intense ImageMagick multi-tiling operations are triggered.
+It can easily be thrown into a `crontab` to periodically cycle wallpapers, though keep in mind it will briefly wake up your CPU/GPU hardware if AI upscaling or intense ImageMagick multi-tiling operations are triggered. Cron jobs start without any display-session environment (`XDG_CURRENT_DESKTOP`, `DISPLAY`, ...), which is normally injected by the display manager at graphical login -- `bin/wallpaperinho` detects this and transparently inherits those variables from your active GUI session before launching Node, so plain crontab entries work out of the box (see [Running Under Cron](#running-under-cron)).
 
 ---
 
@@ -159,6 +159,20 @@ Targeted directory automation with custom strategy routing:
 ```bash
 ./bin/wallpaperinho --directory "/path/to/my/images" --strategy "gemini" --debug
 ```
+
+### Running Under Cron
+
+Wallpaperinho is designed to run unattended. Because cron starts jobs with a minimal environment, `bin/wallpaperinho` detects when display/session variables are missing and inherits them from one of your own processes belonging to an active GUI session (read via `/proc/<pid>/environ`). A plain entry like this just works -- no wrapper scripts or manual exports required:
+
+```cron
+*/5 * * * * /path/to/wallpaperinho/bin/wallpaperinho --noindex --profile liminal --directory "/path/to/images"
+```
+
+Notes:
+- Variables already set in the calling environment always take precedence over auto-inheritance -- e.g., prefixing a crontab line with `export XDG_CURRENT_DESKTOP=X-Cinnamon;` pins the desktop explicitly.
+- If multiple graphical sessions are logged in simultaneously, the first one found wins.
+- Overlapping runs are guarded by an exclusive lock (`flock`): if a previous instance is still processing (e.g., AI upscaling outlives your cron interval), new invocations log a notice and exit cleanly instead of corrupting shared temp files or catalog state.
+- The wrapper needs `node` reachable through cron's default `PATH` (`/usr/bin:/bin`) -- if you manage Node via nvm/asdf/mise, use the absolute path to the binary or export `PATH` inside the crontab line.
 
 ---
 
