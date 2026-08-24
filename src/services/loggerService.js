@@ -13,6 +13,12 @@
  *   - tag provided → "[{tag}] {message}" with colored tag + gray message
  *   - no tag      → "{message}" with level-based color on the full message
  *
+ * Level filtering (--silent):
+ *   The optional second constructor argument sets the minimum severity to emit
+ *   ("debug" | "info" | "warn" | "error", default "debug" = show everything).
+ *   Messages below the threshold are dropped entirely -- e.g., minLevel "warn"
+ *   keeps warnings+errors, which is what unattended/cron runs use (--silent).
+ *
  * Colors (when stdout is a TTY):
  *   log/info  → green tag
  *   debug     → blue tag
@@ -25,6 +31,9 @@
  */
 
 import path from "node:path"
+
+// Log level thresholds (higher = more severe)
+const LEVELS = { debug: 10, info: 20, warn: 30, error: 40 }
 
 // ANSI color codes
 const Color = {
@@ -45,10 +54,18 @@ class LoggerService {
     /** @type {boolean} Whether to use ANSI color codes */
     #useColors = false
 
+    /** @type {number} Minimum severity threshold; messages below this are dropped */
+    #minLevel = LEVELS.debug
+
     /**
      * @param {ConfigService} configService - Must expose settings.imageDirectories
+     * @param {"debug"|"info"|"warn"|"error"} [minLevel="debug"] - Minimum severity to emit (default shows everything).
      */
-    constructor(configService) {
+    constructor(configService, minLevel = "debug") {
+        if (!(minLevel in LEVELS)) {
+            throw new RangeError(`Unknown log level "${minLevel}" -- expected one of: ${Object.keys(LEVELS).join(", ")}`)
+        }
+        this.#minLevel = LEVELS[minLevel]
         this.#stripPrefix = this.#computeStripPrefix(
             configService.settings.imageDirectories || []
         )
@@ -158,6 +175,7 @@ class LoggerService {
      * @param {string} [tag] - Optional tag for bracketed prefix.
      */
     log(message, tag) {
+        if (this.#minLevel > LEVELS.info) return
         const { tagStr, msgStr } = this.#format(message, tag, Color.Green, Color.Reset)
         console.log(tagStr + msgStr)
     }
@@ -168,6 +186,7 @@ class LoggerService {
      * @param {string} [tag] - Optional tag for bracketed prefix.
      */
     info(message, tag) {
+        if (this.#minLevel > LEVELS.info) return
         const { tagStr, msgStr } = this.#format(message, tag, Color.Green, Color.Reset)
         console.info(tagStr + msgStr)
     }
@@ -178,6 +197,7 @@ class LoggerService {
      * @param {string} [tag] - Optional tag for bracketed prefix.
      */
     debug(message, tag) {
+        if (this.#minLevel > LEVELS.debug) return
         const { tagStr, msgStr } = this.#format(message, tag, Color.Blue, Color.Gray)
         console.log(tagStr + msgStr)
     }
@@ -188,12 +208,14 @@ class LoggerService {
      * @param {string} [tag] - Optional tag for bracketed prefix.
      */
     warn(message, tag) {
+        if (this.#minLevel > LEVELS.warn) return
         const { tagStr, msgStr } = this.#format(message, tag, Color.Yellow, Color.Yellow)
         console.warn(tagStr + msgStr)
     }
 
     /**
      * Error with path sanitization and red tag color. Delegates to console.error.
+     * Always emitted regardless of the minimum level threshold.
      * @param {string} message - The log message.
      * @param {string} [tag] - Optional tag for bracketed prefix.
      */

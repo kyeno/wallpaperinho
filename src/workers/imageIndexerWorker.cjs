@@ -23,6 +23,18 @@ const { default: ImageProcessor } = _require("../lib/imageProcessor.js")
 let processor = null
 
 /**
+ * Drain buffered classified-stderr notes from the processor into a message payload so
+ * the main thread can log them at proper levels (workers have no logger of their own).
+ * @param {object} data - Result payload to extend with `notes` when present.
+ * @param {{drainImNotes?: Function}} proc - ImageProcessor instance.
+ */
+function attachImNotes(data, proc) {
+    if (!proc || typeof proc.drainImNotes !== "function") return
+    const notes = proc.drainImNotes()
+    if (Array.isArray(notes) && notes.length > 0) data.notes = notes
+}
+
+/**
  * Process a single image: read file stats and extract dimensions + HSL via ImageProcessorService.
  * @param {string} filePath - Absolute path to the image file.
  */
@@ -55,29 +67,33 @@ function processImage(filePath) {
         parentPort.postMessage({
             type: "result",
             success: true,
-            data: {
-                path: filePath,
-                width,
-                height,
-                filesize,
-                hue,
-                saturation,
-                lightness,
-                contrast,
-                entropy,
-                canny,
-                palette,
-            },
+            data: (() => {
+                const d = {
+                    path: filePath,
+                    width,
+                    height,
+                    filesize,
+                    hue,
+                    saturation,
+                    lightness,
+                    contrast,
+                    entropy,
+                    canny,
+                    palette,
+                }
+                attachImNotes(d, processor)
+                return d
+            })(),
         })
     } catch (err) {
-        // File may not exist or ImageMagick failed
+        // File may not exist or ImageMagick failed -- relay classified stderr notes so the
+        // main thread can log them at proper levels.
+        const failData = { path: filePath, error: err.message }
+        attachImNotes(failData, processor)
         parentPort.postMessage({
             type: "result",
             success: false,
-            data: {
-                path: filePath,
-                error: err.message,
-            },
+            data: failData,
         })
     }
 }

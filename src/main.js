@@ -30,8 +30,10 @@ import ImageSelector from "./lib/imageSelector.js"
 import DisplayAssignment from "./lib/displayAssignment.js"
 import WallpaperGenerator from "./lib/wallpaperGenerator.js"
 import WallpaperSetter from "./lib/wallpaperSetter.js"
+import QuarantineService from "./lib/quarantineService.js"
 
 const DB_DIR = path.resolve(__dirname, "..", "var", "db")
+const STATE_FILE = path.resolve(__dirname, "..", "var", "state", "last-profile.json")
 
 /**
  * Compute a short SHA-1 hash from an array of directory paths.
@@ -45,12 +47,43 @@ function directoriesHash(dirs) {
 }
 
 /**
+ * Read the profile name persisted by the previous successful random run.
+ * Best-effort: any problem (missing file, bad JSON) yields null.
+ * @returns {string|null}
+ */
+function readLastPickedProfile() {
+    try {
+        const data = JSON.parse(fs.readFileSync(STATE_FILE, "utf8"))
+        return typeof data.profile === "string" && data.profile ? data.profile : null
+    } catch {
+        return null
+    }
+}
+
+/**
+ * Persist the randomly picked profile so the next run can rotate away from it.
+ * Best-effort state -- failures never break the wallpaper pipeline.
+ * @param {string} profileName
+ * @returns {boolean} True when the state was written successfully.
+ */
+function writeLastPickedProfile(profileName) {
+    try {
+        fs.mkdirSync(path.dirname(STATE_FILE), { recursive: true })
+        fs.writeFileSync(
+            STATE_FILE,
+            JSON.stringify({ profile: profileName, at: new Date().toISOString() }, null, 4) + "\n"
+        )
+        return true
+    } catch {
+        return false
+    }
+}
+
+/**
  * Main entry point -- DI composition root.
  */
 async function main() {
-    console.log(WALLPAPERINHO_ART)
-
-    const knownFlags = new Set(["--debug", "--noindex", "--recreate", "--profile", "--directory", "--strategy", "--help", "--list-profiles"])
+    const knownFlags = new Set(["--debug", "--noindex", "--recreate", "--profile", "--directory", "--strategy", "--help", "--list-profiles", "--silent", "--random", "--cron"])
     const knownFlagLongValues = new Set(["--profile", "--directory", "--strategy"])
 
     // Detect unknown arguments
@@ -88,11 +121,25 @@ async function main() {
             profile:     { type: "string",  default: "default" },
             directory:   { type: "string",  multiple: true },
             strategy:    { type: "string" },
+            silent:      { type: "boolean", default: false },
+            random:      { type: "boolean", default: false },
+            cron:        { type: "boolean", default: false },
             help:        { type: "boolean", default: false },
             "list-profiles": { type: "boolean", default: false },
         },
         allowPositionals: true,
     })
+
+    // --cron is sugar for unattended runs: quiet logging + random profile rotation
+    if (values.cron) {
+        values.silent = true
+        values.random = true
+    }
+
+    // Banner prints after arg parsing so --silent can suppress it.
+    if (!values.silent) {
+        console.log(WALLPAPERINHO_ART)
+    }
 
     if (values.help) {
         console.log(HELP_TEXT)
@@ -108,8 +155,27 @@ async function main() {
         return
     }
 
-    // Resolve profile: use explicit value only if it's not the parseArgs default
-    const profileArg = values.profile !== "default" ? values.profile : null
+    // Resolve the profile for this run:
+    //   - explicit --profile <name> always wins ("default" sentinel = implicit first profile)
+    //   - otherwise pick a random eligible profile (excludeFromRandom-aware), rotating
+    //     away from the last successfully used one when possible (--random makes this
+    //     explicit; it is also the default behavior since bare runs should surprise you).
+    const explicitProfile = values.profile !== "default" ? values.profile : null
+    let profileArg = explicitProfile
+    let pickedRandomly = false
+
+    if (!explicitProfile) {
+        const allProfiles = ConfigService.listProfiles()
+        const eligible = ConfigService.listEligibleProfiles()
+        if (eligible.length === 0 && allProfiles.length > 0) {
+            console.warn("[main] All profiles are excluded from random selection -- falling back to the implicit default")
+        }
+        const candidate = ConfigService.pickRandomProfile({ excludeName: readLastPickedProfile() })
+        if (candidate) {
+            profileArg = candidate
+            pickedRandomly = true
+        }
+    }
 
     // --- DI Composition Root ---
 
@@ -122,8 +188,10 @@ async function main() {
             : null,
     })
 
-    // 2. Initialize logger (has its own TTY-based color detection)
-    const logger = new LoggerService(config)
+    // 2. Initialize logger (has its own TTY-based color detection).
+    //    --silent raises the minimum level to WARN: banner/info/debug are hidden but
+    //    warnings and errors remain visible -- sized for cron mail capture.
+    const logger = new LoggerService(config, values.silent ? "warn" : undefined)
 
     if (values.debug) {
         logger.info("Debug overlay enabled via --debug flag", 'main')
@@ -133,12 +201,18 @@ async function main() {
         logger.info(`Strategy override: ${values.strategy}`, 'main')
     }
 
+    if (pickedRandomly) {
+        logger.info(`Selected random profile: ${profileArg}`, 'main')
+    } else if (values.random && explicitProfile) {
+        logger.info("Both --profile and --random given -- using explicit profile", 'main')
+    }
+
     const activeDirs = config.settings.imageDirectories
     const hash = directoriesHash(activeDirs)
     const dbPath = path.join(DB_DIR, `images-${hash}.sqlite3`)
     const activeProfile = config.getProfileName()
 
-    logger.info(`Profile: ${activeProfile || "(none - directory override)"}`, 'main')
+    logger.info(`Profile: ${activeProfile || "(none)"}`, 'main')
     logger.info(`Image source director${activeDirs.length > 1 ? "ies" : "y"}: ${activeDirs.join(", ")}`, 'main')
     logger.info(`Database: ${dbPath}`, 'main')
 
@@ -156,12 +230,13 @@ async function main() {
 
     // 4. Initialize remaining services with system + logger
     const db = new Database(dbPath, logger)
-    const indexer = new ImageIndexer(db, config, logger, system)
+    const quarantine = new QuarantineService(config, logger)
+    const indexer = new ImageIndexer(db, config, logger, system, quarantine)
     const processor = new ImageProcessor(config, logger, system)
     const selector = new ImageSelector(db, config, processor, logger)
     const assignment = new DisplayAssignment(config.settings.displays, logger)
     const setter = new WallpaperSetter(logger, system)
-    const generator = new WallpaperGenerator(config, db, processor, selector, assignment, setter, logger)
+    const generator = new WallpaperGenerator(config, db, processor, selector, assignment, setter, logger, quarantine)
 
     // Setup graceful shutdown handler now that all dependencies are initialized
     const shutdown = setupGracefulShutdown({ indexer, db, generator, logger })
@@ -187,6 +262,11 @@ async function main() {
         // Generate & set wallpapers
         const wallpaperPath = await generator.generate(activeProfile)
         if (wallpaperPath) {
+            // Remember this pick so the next unattended run rotates to a different profile.
+            // Only recorded for random picks -- explicit --profile runs are intentional repeats.
+            if (pickedRandomly && !writeLastPickedProfile(profileArg)) {
+                logger.warn("Could not persist last-picked profile state (rotation will repeat)", 'main')
+            }
             logger.info(`Wallpaper set successfully: ${wallpaperPath}`, 'main')
         } else {
             logger.error("Wallpaper generation failed", 'main')

@@ -55,6 +55,19 @@ export const config = {
     /** Accepted file extensions (lowercase, including dot) */
     imageExtensions: [".jpg", ".jpeg", ".png", ".webp"],
 
+    // ===== Broken image quarantine =====
+
+    /**
+     * When true (default), images that exist but fail to decode (truncated copies, corrupt
+     * files) are moved out of the library so they stop failing every run, and their catalog
+     * rows are dropped. Requires a writable directory -- see quarantinedImagesDirectory.
+     * Set false to leave broken files where they are.
+     */
+    quarantineBrokenImages: true,
+
+    /** Where quarantined images are moved. Default when unset: ~/Pictures/Quarantined. */
+    quarantinedImagesDirectory: "/home/username/Pictures/Quarantined/",
+
     // ===== Image matching (may be overriden with profile) =====
 
      /**

@@ -15,11 +15,8 @@
  * @license MIT
  */
 
-import { execFile } from "node:child_process"
-import { promisify } from "node:util"
 import SystemService from "../services/systemService.js"
-
-const execFileAsync = promisify(execFile)
+import { runCommand, emitClassified } from "./commandRunner.js"
 
 // ========================
 // DE-Specific Strategies
@@ -41,8 +38,9 @@ class CinnamonSetter {
 
         for (const [bin, args] of commands) {
             try {
-                await execFileAsync(bin, args, { timeout: 10000 })
+                await runCommand(bin, args, { timeout: 10000 })
             } catch (err) {
+                emitClassified(this.logger, err.classified, 'WallpaperSetter')
                 this.logger.error(`Cinnamon: failed "${bin} ${args.join(" ")}": ${err.message}`, 'WallpaperSetter')
                 return false
             }
@@ -69,8 +67,9 @@ class GnomeSetter {
 
         for (const [bin, args] of commands) {
             try {
-                await execFileAsync(bin, args, { timeout: 10000 })
+                await runCommand(bin, args, { timeout: 10000 })
             } catch (err) {
+                emitClassified(this.logger, err.classified, 'WallpaperSetter')
                 this.logger.error(`GNOME: failed "${bin} ${args.join(" ")}": ${err.message}`, 'WallpaperSetter')
                 return false
             }
@@ -92,10 +91,11 @@ class KdeSetter {
     async set(filePath) {
         // Primary: plasma-apply-wallpaperimage (works on Plasma 5 and 6)
         try {
-            await execFileAsync("plasma-apply-wallpaperimage", [filePath], { timeout: 15000 })
+            await runCommand("plasma-apply-wallpaperimage", [filePath], { timeout: 15000 })
             this.logger.log(`KDE wallpaper set via plasma-apply-wallpaperimage: ${filePath}`, 'WallpaperSetter')
             return true
         } catch (err) {
+            emitClassified(this.logger, err.classified, 'WallpaperSetter')
             this.logger.warn(`KDE: plasma-apply-wallpaperimage failed (${err.message}), trying qdbus...`, 'WallpaperSetter')
         }
 
@@ -115,10 +115,11 @@ class KdeSetter {
 
         for (const [bin, args] of qdbusAttempts) {
             try {
-                await execFileAsync(bin, args, { timeout: 15000 })
+                await runCommand(bin, args, { timeout: 15000 })
                 this.logger.log(`KDE wallpaper set via qdbus: ${args.join(" ")}`, 'WallpaperSetter')
                 return true
             } catch (err) {
+                emitClassified(this.logger, err.classified, 'WallpaperSetter')
                 this.logger.warn(`KDE: qdbus attempt failed (${err.message}), trying next...`, 'WallpaperSetter')
             }
         }
@@ -148,13 +149,13 @@ class XfceSetter {
 
         // First try to list property channels to discover monitors
         try {
-            const result = await execFileAsync("xfconf-query", [
+            const result = await runCommand("xfconf-query", [
                 "-c", channel,
                 "-l",
                 "-p", baseProp
             ], { timeout: 5000 })
 
-            const output = result.stdout?.toString().trim() || ""
+            const output = (result.stdout || "").trim()
             // Output looks like: /backdrop/screen0/DP-1/workspace0/last-image
             //                    /backdrop/screen0/HDMI-A-0/workspace0/image-style
             //                    /backdrop/screen0/monitor0/workspace0/...
@@ -175,6 +176,7 @@ class XfceSetter {
                 return [...monitors]
             }
         } catch (err) {
+            emitClassified(this.logger, err.classified, 'WallpaperSetter')
             this.logger.warn(`XFCE: monitor discovery failed (${err.message}), falling back to monitor0`, 'WallpaperSetter')
         }
 
@@ -201,8 +203,9 @@ class XfceSetter {
 
             for (const [bin, args] of settings) {
                 try {
-                    await execFileAsync(bin, args, { timeout: 10000 })
+                    await runCommand(bin, args, { timeout: 10000 })
                 } catch (err) {
+                    emitClassified(this.logger, err.classified, 'WallpaperSetter')
                     this.logger.error(
                         `XFCE ${monitor}: failed "${bin} ${args.join(" ")}": ${err.message}`,
                         'WallpaperSetter'
@@ -226,10 +229,11 @@ class HyprlandSetter {
     }
     async set(filePath) {
         try {
-            await execFileAsync("hyprctl", ["dispatch", "wallpaper", "all", filePath], { timeout: 15000 })
+            await runCommand("hyprctl", ["dispatch", "wallpaper", "all", filePath], { timeout: 15000 })
             this.logger.log(`Hyprland wallpaper set: ${filePath}`, 'WallpaperSetter')
             return true
         } catch (err) {
+            emitClassified(this.logger, err.classified, 'WallpaperSetter')
             this.logger.error(`Hyprland: hyprctl failed: ${err.message}`, 'WallpaperSetter')
             return false
         }

@@ -98,9 +98,26 @@ inherit_display_session() {
     done < "$environ_file"
 
     [[ -n "$inherited_list" ]] || return 0
-    printf '[wallpaperinho] Running without a full display session environment -- inherited %s from pid %s (%s)\n' \
-        "$inherited_list" "$pid" "$comm" >&2
+    # Informational only -- suppressed in silent/cron mode so unattended runs stay quiet.
+    if (( SILENT == 0 )); then
+        printf '[wallpaperinho] Running without a full display session environment -- inherited %s from pid %s (%s)\n' \
+            "$inherited_list" "$pid" "$comm" >&2
+    fi
 }
+
+# ========================
+# Silent mode detection
+# ========================
+# --silent (or its sugar form --cron) means "unattended": keep purely
+# informational notices out of the output. Real errors still surface via
+# Node's stderr / exit code, which are never filtered here.
+SILENT=0
+for arg in "$@"; do
+    case "$arg" in
+        --silent|--cron) SILENT=1 ;;
+    esac
+done
+unset arg
 
 inherit_display_session
 
@@ -117,7 +134,10 @@ if command -v flock >/dev/null 2>&1; then
     LOCK_FILE="${TMPDIR:-${XDG_RUNTIME_DIR:-/tmp}}/wallpaperinho-$(id -u).lock"
     exec 9>"$LOCK_FILE"
     if ! flock -n 9; then
-        printf '[wallpaperinho] Another instance is already running -- skipping this run.\n' >&2
+        # Normal condition (previous run still processing) -- not an error, so hidden in silent mode.
+        if (( SILENT == 0 )); then
+            printf '[wallpaperinho] Another instance is already running -- skipping this run.\n' >&2
+        fi
         exit 0
     fi
 fi

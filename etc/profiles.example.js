@@ -3,14 +3,20 @@
  * Wallpaperinho profiles.
  *
  * Each profile only defines the settings it wants to override.
- * The first profile in this object is the implicit default (used when no --profile is passed).
+ * When no --profile flag is passed, one eligible profile is picked at random;
+ * consecutive runs rotate away from the previously used one when possible.
+ * Use "--profile <name>" to pin a specific profile ("default" = first below).
+ *
+ * Optional per-profile meta-keys (not copied into runtime settings):
+ *   - excludeFromRandom: true  → keep this profile out of the random pool
+ *                                (still selectable via explicit --profile)
  *
  * @author Ratan M. Kyeno
  * @license MIT
  */
 
 export const profiles = {
-    // Implicit default - first in list
+    // Implicit default - first in list (also what --profile default selects)
     architecture: {
         imageDirectories: [
             "/media/Pictures/ARCHITECTURE_LANDSCAPES_INTERIORS/"
@@ -21,6 +27,7 @@ export const profiles = {
     },
 
     cars: {
+        excludeFromRandom: true,
         imageDirectories: [
             "/media/Pictures/CARS_AND_BIKES/"
         ],
@@ -39,6 +46,8 @@ export const profiles = {
         imageDirectories: [
             "/media/Pictures/ART/Liminal Spaces/",
         ],
+        // Keep this niche collection out of random rotation:
+        // excludeFromRandom: true,
     },
 
     pictorialism: {

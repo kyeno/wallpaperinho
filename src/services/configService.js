@@ -18,6 +18,8 @@ import fs from "node:fs"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 
+import { getEligibleProfileNames, selectRandomProfile, RANDOM_EXCLUDE_KEY } from "../lib/profilePicker.js"
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const ETC_DIR = path.resolve(__dirname, "..", "..", "etc")
 
@@ -53,34 +55,46 @@ const { profiles } = await import(profilesPath)
  */
 const VALID_STRATEGIES = ["random", "colorHSL", "colorPalette", "contrast", "canny", "entropy", "gemini"]
 
+/**
+ * Profile keys that control selection behavior rather than runtime settings.
+ * They are read by ConfigService/picker logic but must not leak into `.settings`.
+ * @type {Set<string>}
+ */
+const PROFILE_META_KEYS = new Set([RANDOM_EXCLUDE_KEY])
+
+/**
+ * Merge a profile object onto base settings, skipping meta-keys (e.g.,
+ * `excludeFromRandom`) and undefined values. Pure -- inputs are not mutated.
+ * @param {object} baseSettings - Base configuration object to merge onto.
+ * @param {object} [profile={}] - Profile overrides from profiles.js.
+ * @returns {object} New merged settings object.
+ */
+export function applyProfileOverrides(baseSettings, profile = {}) {
+    const merged = { ...baseSettings }
+    for (const [key, value] of Object.entries(profile || {})) {
+        if (value !== undefined && !PROFILE_META_KEYS.has(key)) {
+            merged[key] = value
+        }
+    }
+    return merged
+}
+
 class ConfigService {
     /**
+     * A profile is ALWAYS resolved and merged: even in `--directory` mode the
+     * selected profile still supplies strategies, upscaler model/args etc. --
+     * only its imageDirectories get replaced by the CLI override below.
+     *
      * @param {string|null} profileName - Profile key from profiles.js. Pass null to use the first (implicit default) profile.
      * @param {object} [cliOverrides={}] - CLI argument overrides ({debug?: boolean, strategy?: string, imageDirectories?: string[]})
      */
     constructor(profileName, cliOverrides = {}) {
-        // If --directory was provided via CLI, skip profile merging entirely
-        // and just use base config + CLI overrides
-        const hasDirectoryOverride = cliOverrides.imageDirectories && cliOverrides.imageDirectories.length > 0
-
         this.settings = { ...config }
 
-        if (!hasDirectoryOverride) {
-            // Normal mode: apply profile overrides
-            const resolvedProfile = this._resolveProfile(profileName)
-            const profile = profiles[resolvedProfile] || {}
-
-            for (const [key, value] of Object.entries(profile)) {
-                if (value !== undefined) {
-                    this.settings[key] = value
-                }
-            }
-
-            this._profileName = resolvedProfile
-        } else {
-            // Directory override mode: no profile applied
-            this._profileName = null
-        }
+        // Apply profile overrides (strategies, upscaler, exclusions, ...)
+        const resolvedProfile = this._resolveProfile(profileName)
+        this.settings = applyProfileOverrides(this.settings, profiles[resolvedProfile] || {})
+        this._profileName = resolvedProfile
 
         // Apply CLI overrides last
         if (cliOverrides.imageDirectories && cliOverrides.imageDirectories.length > 0) {
@@ -95,7 +109,8 @@ class ConfigService {
     }
 
     /**
-     * Get the active profile name. Returns null when no profile is active (e.g., --directory bypass).
+     * Get the active profile name. A profile is always resolved; only an empty
+     * profiles.js can yield "".
      * @returns {string|null}
      */
     getProfileName() {
@@ -111,6 +126,24 @@ class ConfigService {
      */
     static listProfiles() {
         return Object.keys(profiles || {})
+    }
+
+    /**
+     * List profiles eligible for random selection (`excludeFromRandom !== true`).
+     * @returns {string[]}
+     */
+    static listEligibleProfiles() {
+        return getEligibleProfileNames(profiles)
+    }
+
+    /**
+     * Pick a random profile among those not marked `excludeFromRandom`.
+     * Falls back to the implicit default (first) profile when nothing is eligible.
+     * @param {{excludeName?: string|null}} [options={}] - Previously picked profile name to avoid repeating.
+     * @returns {string} Profile name ("" when no profiles are defined at all).
+     */
+    static pickRandomProfile({ excludeName = null } = {}) {
+        return selectRandomProfile(profiles, { excludeName })
     }
 
     /**

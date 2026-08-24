@@ -18,6 +18,7 @@ import fs from "node:fs"
 import path from "node:path"
 
 import ConfigService from "../services/configService.js"
+import { emitClassified } from "./commandRunner.js"
 
 /**
  * Wallpaper Generator Class
@@ -36,8 +37,9 @@ class WallpaperGenerator {
      * @param {DisplayAssignment} displayAssignment
      * @param {WallpaperSetter} wallpaperSetter
      * @param {LoggerService} [logger] - Optional logger service instance.
+     * @param {QuarantineService|null} [quarantine=null] - Optional quarantine service for broken images.
      */
-    constructor(config, db, imageProcessor, imageSelector, displayAssignment, wallpaperSetter, logger) {
+    constructor(config, db, imageProcessor, imageSelector, displayAssignment, wallpaperSetter, logger, quarantine = null) {
         this.config = config
         this.db = db
         this.imageProcessor = imageProcessor
@@ -45,6 +47,7 @@ class WallpaperGenerator {
         this.displayAssignment = displayAssignment
         this.wallpaperSetter = wallpaperSetter
         this.logger = logger || console
+        this.quarantine = quarantine
     }
 
     /**
@@ -124,24 +127,38 @@ class WallpaperGenerator {
             list.sort((a, b) => b.pixelArea - a.pixelArea)
         }
 
+        // Remaining candidates per orientation, kept for self-healing retries when a
+        // chosen image turns out unreadable during processing.
+        const retryPools = { vertical: [], horizontal: [], square: [] }
+        const usedPaths = new Set()
+
+        /** Pick the best-fit candidate from a pool for a slot and remove it from consideration. */
+        const takeBestFor = (poolList, slot) => {
+            let bestIdx = -1
+            let bestScore = Infinity
+            let bestArea = -1
+            for (let i = 0; i < poolList.length; i++) {
+                if (usedPaths.has(poolList[i].path)) continue
+                const score = this.#aspectDistance(poolList[i], slot)
+                const area = poolList[i].width * poolList[i].height
+                if (score < bestScore || (score === bestScore && area > bestArea)) {
+                    bestScore = score
+                    bestArea = area
+                    bestIdx = i
+                }
+            }
+            if (bestIdx < 0) return null
+            const [img] = poolList.splice(bestIdx, 1)
+            usedPaths.add(img.path)
+            return img
+        }
+
         for (const orient of ["vertical", "horizontal", "square"]) {
             const slotList = orientGroups[orient]
             const free = [...poolByOrientation[orient]]
             for (const slot of slotList) {
-                let bestIdx = -1
-                let bestScore = Infinity
-                let bestArea = -1
-                for (let i = 0; i < free.length; i++) {
-                    const score = this.#aspectDistance(free[i], slot)
-                    const area = free[i].width * free[i].height
-                    if (score < bestScore || (score === bestScore && area > bestArea)) {
-                        bestScore = score
-                        bestArea = area
-                        bestIdx = i
-                    }
-                }
-                if (bestIdx >= 0) {
-                    const [img] = free.splice(bestIdx, 1)
+                const img = takeBestFor(free, slot)
+                if (img) {
                     slot.assignedImage = img
                     // Propagate _isSeed flag so annotate() can display it
                     slot._isSeed = seedImageIds.has(img.id)
@@ -152,9 +169,21 @@ class WallpaperGenerator {
                     )
                 }
             }
+            retryPools[orient] = free   // leftovers stay available for retries
         }
 
-        // Process each assigned slot -- outputs go to TEMP_DIR with prefixed names
+        /** Try to replace a failed candidate with the next-best one from the same orientation. */
+        const swapInNextCandidate = (slot) => {
+            const next = takeBestFor(retryPools[slot.orientation], slot)
+            if (!next) return false
+            slot.assignedImage = next
+            slot._isSeed = seedImageIds.has(next.id)
+            return true
+        }
+
+        // Process each assigned slot -- outputs go to TEMP_DIR with prefixed names.
+        // Self-healing: when a chosen image fails its pre-flight decode check we quarantine
+        // it (when enabled), drop its catalog row and retry with the next-best candidate.
         /** @type {string[]} */
         const upscaleTempFiles = []
         let allSuccess = true
@@ -163,13 +192,35 @@ class WallpaperGenerator {
                 allSuccess = false
                 continue
             }
-            try {
-                const ok = await this.#processDisplay(slot, tempDir, runPrefix, upscaleTempFiles)
-                if (!ok) allSuccess = false
-            } catch (err) {
-                this.logger.error(`Error for display ${slot.displayIndex}: ${err.message}`, 'WallpaperGenerator')
-                allSuccess = false
+            let ok = false
+            while (!ok && slot.assignedImage) {
+                const img = slot.assignedImage
+                try {
+                    // Pre-flight decode check -- cheap identify that catches corrupt/truncated
+                    // files before expensive upscaling/resize work is spent on them.
+                    this.imageProcessor.getDimensions(img.path)
+                } catch (err) {
+                    emitClassified(this.logger, err.classified ?? { errors: [], warnings: [] }, 'WallpaperGenerator')
+                    this.imageProcessor.drainImNotes()
+                    await this.#quarantineBrokenSource(img)
+                    this.logger.warn(
+                        `Unreadable image skipped for display ${slot.displayIndex}: ${img.path}`,
+                        'WallpaperGenerator'
+                    )
+                    if (!swapInNextCandidate(slot)) break
+                    continue
+                }
+                try {
+                    ok = await this.#processDisplay(slot, tempDir, runPrefix, upscaleTempFiles)
+                    if (!ok) break
+                } catch (err) {
+                    // Non-decode failure (environmental: disk, GPU, ...) -- don't burn through
+                    // the remaining candidates; report and move to the next display.
+                    this.logger.error(`Error for display ${slot.displayIndex}: ${err.message}`, 'WallpaperGenerator')
+                    break
+                }
             }
+            if (!ok) allSuccess = false
         }
 
         if (!allSuccess) {
@@ -329,6 +380,22 @@ class WallpaperGenerator {
         }
 
         return true
+    }
+
+    /**
+     * Move an unreadable source image into quarantine and drop its catalog row.
+     * Best-effort -- never throws; no-op when quarantine is disabled/unavailable.
+     * @param {{path: string}} img - Image record that failed decoding.
+     */
+    async #quarantineBrokenSource(img) {
+        if (!this.quarantine || !img?.path) return
+        try {
+            if (!this.quarantine.canQuarantine(img.path)) return
+            const dest = this.quarantine.quarantine(img.path)
+            if (dest) await this.db.removeImage(img.path)
+        } catch (err) {
+            this.logger.warn(`Quarantine skipped for ${img.path}: ${err.message}`, 'WallpaperGenerator')
+        }
     }
 
     /**

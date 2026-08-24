@@ -4,21 +4,32 @@ USAGE:
   bin/wallpaperinho [options]
 
 OPTIONS:
-  --debug                Enable debug overlay on generated images (overrides config)
-  --noindex              Skip re-indexing images (use existing database)
-  --recreate             Remove and recreate the database from scratch
-  --profile <name>       Use a named profile for image directories and upscaler settings
-  --directory <path>     Specify an image directory to index (can be repeated, overrides profile)
-  --strategy <name>      Override matching strategy (random|colorHSL|colorPalette|contrast|canny|entropy|gemini)
-  --list-profiles        List available profiles and exit
-  --help                 Show this help message and exit
+  --debug                 Enable debug overlay on generated images (overrides config)
+  --noindex               Skip re-indexing images (use existing database)
+  --recreate              Remove and recreate the database from scratch
+  --profile <name>        Use a named profile; always wins over random selection.
+                          ("default" selects the implicit first profile in profiles.js)
+  --directory <path>      Specify an image directory to index (can be repeated).
+                          Replaces only the selected profile's imageDirectories --
+                          strategies, upscaler model/args etc. still come from the profile.
+  --strategy <name>       Override matching strategy (random|colorHSL|colorPalette|contrast|canny|entropy|gemini)
+  --silent                Unattended mode: hide banner/info/debug output; warnings and
+                           errors are still shown (sized for cron mail capture)
+  --random                Pick a random eligible profile before generating. This is already
+                          the default when no --profile is given; kept for explicit crontab lines.
+                          Profiles may opt out with "excludeFromRandom: true".
+  --cron                  Unattended mode: implies --silent + --random
+  --list-profiles         List available profiles and exit
+  --help                  Show this help message and exit
 
 EXAMPLES:
-  bin/wallpaperinho
+  bin/wallpaperinho                                  # random eligible profile (rotation-aware)
   bin/wallpaperinho --debug
   bin/wallpaperinho --noindex
-  bin/wallpaperinho --profile liminal
-  bin/wallpaperinho --directory /path/to/images
+  bin/wallpaperinho --profile liminal                # pin one specific profile
+  bin/wallpaperinho --profile default                # pin the implicit first profile
+  bin/wallpaperinho --directory /path/to/images      # custom dirs, profile settings still apply
   bin/wallpaperinho --directory /a --directory /b --recreate
   bin/wallpaperinho --strategy canny
   bin/wallpaperinho --profile liminal --strategy colorHSL
+  bin/wallpaperinho --cron                           # quiet unattended run (ideal for crontab)

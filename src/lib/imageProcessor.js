@@ -12,11 +12,11 @@
  * @license MIT
  */
 
-import { execFile, execFileSync } from "node:child_process"
+import { execFileSync } from "node:child_process"
 import fs from "node:fs"
-import { promisify } from "node:util"
+import path from "node:path"
 
-const execFileAsync = promisify(execFile)
+import { runCommand, runCommandSync, classifyStderr, emitClassified } from "./commandRunner.js"
 
 /**
  * Check if ImageMagick v7+ is available and executable.
@@ -60,6 +60,31 @@ class ImageProcessor {
         this.config = config
         this.logger = logger || console
         this.system = system
+        /** Classified stderr notes from failed child-process calls (drained by callers). */
+        this._imNotes = []
+    }
+
+    /**
+     * Record classified output from a failed external command so the caller (worker
+     * thread or main pipeline) can relay it through its own logger at proper levels.
+     * @param {Error} err - Thrown error; CommandError instances carry .classified/.stderr.
+     * @param {string} context - Short label for what was attempted (e.g., "identify").
+     */
+    #noteFailure(err, context) {
+        const c = err?.classified ?? classifyStderr(err?.stderr, { failed: true })
+        if ((c.errors.length > 0) || (c.warnings.length > 0)) {
+            this._imNotes.push({ context, errors: c.errors, warnings: c.warnings })
+        }
+    }
+
+    /**
+     * Collect and clear buffered failure notes since the last drain.
+     * @returns {Array<{context: string, errors: string[], warnings: string[]}>}
+     */
+    drainImNotes() {
+        const notes = [...this._imNotes]
+        this._imNotes.length = 0
+        return notes
     }
 
     // ========================
@@ -80,9 +105,18 @@ class ImageProcessor {
      * @returns {{width: number, height: number}}
      */
     getDimensions(filePath) {
-        const output = execFileSync(this.#getBin(), [
-            "identify", "-format", "%w %h", filePath
-        ]).toString().trim()
+        let stdout
+        try {
+            stdout = runCommandSync(this.#getBin(), [
+                "identify", "-format", "%w %h", filePath
+            ]).stdout
+        } catch (err) {
+            // Corrupt/unreadable image -- keep throwing (callers rely on it), but carry
+            // classified stderr lines so they can be logged at proper levels upstream.
+            this.#noteFailure(err, `identify ${filePath}`)
+            throw err
+        }
+        const output = stdout.trim()
         const parts = output.split(/\s+/)
 
         return {
@@ -100,14 +134,15 @@ class ImageProcessor {
         const formatStr = '%[fx:int(standard_deviation*100)]'
 
         try {
-            const output = execFileSync(this.#getBin(), [
+            const output = runCommandSync(this.#getBin(), [
                 filePath, "-colorspace", "Gray",
                 "-format", formatStr, "info:",
-            ]).toString().trim()
+            ]).stdout.trim()
 
             const contrast = parseInt(output, 10)
             return { contrast: Number.isNaN(contrast) ? null : contrast }
-        } catch {
+        } catch (err) {
+            this.#noteFailure(err, `contrast ${filePath}`)
             return { contrast: null }
         }
     }
@@ -119,15 +154,16 @@ class ImageProcessor {
      */
     getEntropy(filePath) {
         try {
-            const output = execFileSync(this.#getBin(), [
+            const output = runCommandSync(this.#getBin(), [
                 filePath, "-colorspace", "Gray",
                 "-statistic", "StandardDeviation", "5x5",
                 "-format", "%[entropy]", "info:",
-            ]).toString().trim()
+            ]).stdout.trim()
 
             const entropy = parseFloat(output)
             return { entropy: Number.isNaN(entropy) ? null : entropy }
-        } catch {
+        } catch (err) {
+            this.#noteFailure(err, `entropy ${filePath}`)
             return { entropy: null }
         }
     }
@@ -141,15 +177,16 @@ class ImageProcessor {
         const formatStr = '%[fx:int(mean*100)]'
 
         try {
-            const output = execFileSync(this.#getBin(), [
+            const output = runCommandSync(this.#getBin(), [
                 filePath, "-resize", "400x400",
                 "-canny", "0x1+10%+30%",
                 "-format", formatStr, "info:",
-            ]).toString().trim()
+            ]).stdout.trim()
 
             const canny = parseInt(output, 10)
             return { canny: Number.isNaN(canny) ? null : canny }
-        } catch {
+        } catch (err) {
+            this.#noteFailure(err, `canny ${filePath}`)
             return { canny: null }
         }
     }
@@ -162,10 +199,10 @@ class ImageProcessor {
      */
     getDominantPalette(filePath) {
         try {
-            const output = execFileSync(this.#getBin(), [
+            const output = runCommandSync(this.#getBin(), [
                 filePath, "-resize", "x100!", "-colors", "5",
                 "-format", "%c", "histogram:info:",
-            ]).toString().trim()
+            ]).stdout.trim()
 
             // Output lines look like: "282708: (17.34,22.33,13.94) #11160E srgb(17.34%,22.33%,13.94%)"
             const lines = output.split("\n").filter(l => l.trim())
@@ -184,7 +221,8 @@ class ImageProcessor {
             }
 
             return { palette: palette.length > 0 ? JSON.stringify(palette) : null }
-        } catch {
+        } catch (err) {
+            this.#noteFailure(err, `palette ${filePath}`)
             return { palette: null }
         }
     }
@@ -220,17 +258,18 @@ class ImageProcessor {
      * @returns {Promise<string>} Stdout.
      */
     async #run(args) {
-        const { stdout, stderr } = await execFileAsync(this.#getBin(), ["convert", ...args])
-        if (stderr) {
-            const lines = stderr
-                .split("\n")
-                .filter((line) => !line.includes("deprecated in IMv7") && !line.includes("Delegate"))
-                .join("\n")
-            if (lines.trim()) {
-                this.logger.warn(`ImageMagick warning: ${lines.trim()}`, 'ImageProcessor')
-            }
+        let result
+        try {
+            result = await runCommand(this.#getBin(), ["convert", ...args])
+        } catch (err) {
+            // Emit each line at its proper level first, then rethrow a concise error so
+            // upstream handlers log one clean line instead of a multi-line dump.
+            emitClassified(this.logger, err.classified, 'ImageProcessor')
+            const inputLabel = typeof args[0] === "string" ? path.basename(args[0]) : "input"
+            throw new Error(`magick convert failed for ${inputLabel}: ${err.message}`)
         }
-        return stdout
+        emitClassified(this.logger, classifyStderr(result.stderr), 'ImageProcessor')
+        return result.stdout
     }
 
     /**
@@ -411,11 +450,10 @@ class ImageProcessor {
 
         this.logger.debug(`Running ncnn upscale: ${bin} ${args.join(" ")}`, 'ImageProcessor')
         try {
-            await execFileAsync(bin, args)
+            await runCommand(bin, args)
         } catch (err) {
-            const detail = [err.message, err.stderr?.toString().trim()]
-                .filter(Boolean).join(" | ").slice(0, 500)
-            throw new Error(`NCNN upscaler failed for ${inputPath}: ${detail}`)
+            emitClassified(this.logger, err.classified, 'ImageProcessor')
+            throw new Error(`NCNN upscaler failed for ${inputPath}: ${err.message}`)
         }
 
         // realesrgan-ncnn-vulkan can exit 0 without writing anything -- verify before trusting it
@@ -571,7 +609,14 @@ class ImageProcessor {
         cmdArgs.push("-quality", String(quality))
         cmdArgs.push(outputPath)
 
-        await execFileAsync(bin, ["convert", ...cmdArgs])
+        let result
+        try {
+            result = await runCommand(bin, ["convert", ...cmdArgs])
+        } catch (err) {
+            emitClassified(this.logger, err.classified, 'ImageProcessor')
+            throw new Error(`composite assembly failed (${tiles.length} tiles): ${err.message}`)
+        }
+        emitClassified(this.logger, classifyStderr(result.stderr), 'ImageProcessor')
         this.logger.log(`Composite written: ${outputPath}`, 'ImageProcessor')
     }
 }

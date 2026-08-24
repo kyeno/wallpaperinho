@@ -15,6 +15,8 @@ import { fileURLToPath } from "node:url"
 import path from "node:path"
 import { Worker } from "node:worker_threads"
 
+import { emitClassified } from "./commandRunner.js"
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
 /**
@@ -34,12 +36,14 @@ class ImageIndexer {
      * @param {ConfigService} config - Configuration service instance.
      * @param {LoggerService} [logger] - Optional logger service instance.
      * @param {SystemService|null} [system=null] - Optional system service (provides cached CPU count).
+     * @param {QuarantineService|null} [quarantine=null] - Optional quarantine service for broken images.
      */
-    constructor(db, config, logger, system = null) {
+    constructor(db, config, logger, system = null, quarantine = null) {
         this.db = db
         this.config = config
         this.logger = logger || console
         this.system = system
+        this.quarantine = quarantine
     }
 
     /**
@@ -140,9 +144,13 @@ class ImageIndexer {
                 worker.on("message", (msg) => {
                     if (msg.type === "result") {
                         if (msg.success) {
+                            this.#emitNotes(msg.data.notes)
                             this.db.insertImage(msg.data)
                         } else {
+                            // Surface classified child-process output at proper levels first
+                            this.#emitNotes(msg.data.notes)
                             this.logger.warn(`Failed to index: ${msg.data.path} (${msg.data.error})`, 'ImageIndexer')
+                            this.#quarantineIfBroken(msg.data.path)
                         }
                         completed++
                         this.#busyWorkers.delete(worker)
@@ -192,6 +200,32 @@ class ImageIndexer {
         this.#workers = []
         this.#busyWorkers.clear()
         this.#nextIndex = 0
+    }
+
+    /**
+     * Relay classified child-process stderr notes from a worker through the logger.
+     * @param {Array<{context?: string, errors: string[], warnings: string[]}>|undefined} notes
+     */
+    #emitNotes(notes) {
+        for (const note of notes ?? []) {
+            emitClassified(this.logger, { errors: note.errors || [], warnings: note.warnings || [] }, 'ImageIndexer')
+        }
+    }
+
+    /**
+     * Move an image that exists but failed to decode into quarantine and drop its catalog row.
+     * Best-effort -- never throws; no-op when quarantine is disabled/unavailable.
+     * @param {string|null} filePath - Path reported by the worker.
+     */
+    #quarantineIfBroken(filePath) {
+        if (!this.quarantine || !filePath) return
+        try {
+            if (!this.quarantine.canQuarantine(filePath)) return
+            const dest = this.quarantine.quarantine(filePath)
+            if (dest) void this.db.removeImage(filePath)
+        } catch (err) {
+            this.logger.warn(`Quarantine check skipped for ${filePath}: ${err.message}`, 'ImageIndexer')
+        }
     }
 
     /**

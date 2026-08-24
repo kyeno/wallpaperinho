@@ -67,10 +67,12 @@ It can easily be thrown into a `crontab` to periodically cycle wallpapers, thoug
 
 Configuration is split into two cleanly separated files located inside the `etc/` directory:
 1. **`config.js`**: The base configuration layer exported as a plain JavaScript object using standard **camelCase** keys. It establishes system defaults, display dimensions, tolerances, and upscaler paths.
-2. **`profiles.js`**: Profile-specific overrides. You can define various named presets (e.g., `liminal`, `anime`). The first profile specified acts as the implicit default when the `--profile` flag is omitted.
+2. **`profiles.js`**: Profile-specific overrides. You can define various named presets (e.g., `liminal`, `anime`). When no `--profile` flag is passed, one eligible profile is picked at random (consecutive runs rotate away from the previously used one); pin any specific preset with `--profile <name>` (`default` selects the first/implicit-default profile). A profile may opt out of the random pool by setting `"excludeFromRandom": true`.
 
 At runtime, the effective settings are resolved dynamically using a strict hierarchy:
 **Base Config (`config.js`) ➔ Selected Profile Overrides ➔ CLI Argument Overrides**
+
+Note that `--directory` only replaces the selected profile's `imageDirectories` -- strategies, upscaler model/args and other profile settings still apply.
 
 ### Core Settings Reference
 
@@ -140,9 +142,15 @@ ncnnUpscalerScale: "4"
 Wallpaperinho runs directly via the binary shell wrapper inside the root directory:
 
 ### Subcommands & Automation
-Standard execution (re-indexes designated source trees using all available hardware cores, then maps tiles):
+Standard execution (picks a random eligible profile with rotation awareness, re-indexes designated source trees using all available hardware cores, then maps tiles):
 ```bash
 ./bin/wallpaperinho
+```
+
+Pin one specific profile instead of letting it rotate (`default` = first profile in `profiles.js`):
+```bash
+./bin/wallpaperinho --profile "liminal"
+./bin/wallpaperinho --profile default
 ```
 
 Bypass directory filesystem checking completely and instantly generate a wallpaper using the cached DB catalog (ideal for cron tasks):
@@ -155,9 +163,15 @@ Wipe the catalog metadata completely and force a cold, aggressive re-index from 
 ./bin/wallpaperinho --recreate
 ```
 
-Targeted directory automation with custom strategy routing:
+Targeted directory automation with custom strategy routing (`--directory` replaces only the selected profile's image directories -- its strategies/upscaler settings still apply):
 ```bash
 ./bin/wallpaperinho --directory "/path/to/my/images" --strategy "gemini" --debug
+```
+
+Unattended mode -- warnings and errors are still shown (sized for cron mail capture) plus explicit random-profile selection, ideal for crontab:
+```bash
+./bin/wallpaperinho --cron
+# equivalent to: ./bin/wallpaperinho --silent --random
 ```
 
 ### Running Under Cron
@@ -165,14 +179,27 @@ Targeted directory automation with custom strategy routing:
 Wallpaperinho is designed to run unattended. Because cron starts jobs with a minimal environment, `bin/wallpaperinho` detects when display/session variables are missing and inherits them from one of your own processes belonging to an active GUI session (read via `/proc/<pid>/environ`). A plain entry like this just works -- no wrapper scripts or manual exports required:
 
 ```cron
+# Rotate through all eligible profiles quietly (warnings+errors stay visible in cron mail):
+*/30 * * * * /path/to/wallpaperinho/bin/wallpaperinho --noindex --cron
+
+# ...or pin one specific profile + directory pair:
 */5 * * * * /path/to/wallpaperinho/bin/wallpaperinho --noindex --profile liminal --directory "/path/to/images"
 ```
 
 Notes:
 - Variables already set in the calling environment always take precedence over auto-inheritance -- e.g., prefixing a crontab line with `export XDG_CURRENT_DESKTOP=X-Cinnamon;` pins the desktop explicitly.
 - If multiple graphical sessions are logged in simultaneously, the first one found wins.
-- Overlapping runs are guarded by an exclusive lock (`flock`): if a previous instance is still processing (e.g., AI upscaling outlives your cron interval), new invocations log a notice and exit cleanly instead of corrupting shared temp files or catalog state.
+- Overlapping runs are guarded by an exclusive lock (`flock`): if a previous instance is still processing (e.g., AI upscaling outlives your cron interval), new invocations log a notice (suppressed under `--silent`/`--cron`) and exit cleanly instead of corrupting shared temp files or catalog state.
 - The wrapper needs `node` reachable through cron's default `PATH` (`/usr/bin:/bin`) -- if you manage Node via nvm/asdf/mise, use the absolute path to the binary or export `PATH` inside the crontab line.
+
+### Broken Image Quarantine
+
+Images that exist on disk but cannot be decoded by ImageMagick (truncated copies, corrupt files) are moved out of your library so they stop failing every indexing/generation cycle, and their catalog rows are dropped. Enabled by default (`quarantineBrokenImages: true`).
+
+- Destination defaults to `~/Pictures/Quarantined`; override with `quarantinedImagesDirectory`. Name collisions get `<unixtime>_<name>` suffixes.
+- Only files inside your configured image directories are ever moved; cross-device moves fall back to copy+remove.
+- During generation an unreadable pick is quarantined and the next-best candidate takes its place automatically (self-healing).
+- Disable entirely with `"quarantineBrokenImages": false` in config or profile.
 
 ---
 
