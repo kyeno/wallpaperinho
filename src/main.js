@@ -31,6 +31,7 @@ import DisplayAssignment from "./lib/displayAssignment.js"
 import WallpaperGenerator from "./lib/wallpaperGenerator.js"
 import WallpaperSetter from "./lib/wallpaperSetter.js"
 import QuarantineService from "./lib/quarantineService.js"
+import { resolvePoolScope } from "./lib/poolScope.js"
 
 const DB_DIR = path.resolve(__dirname, "..", "var", "db")
 const STATE_FILE = path.resolve(__dirname, "..", "var", "state", "last-profile.json")
@@ -237,6 +238,26 @@ async function main() {
     const assignment = new DisplayAssignment(config.settings.displays, logger)
     const setter = new WallpaperSetter(logger, system)
     const generator = new WallpaperGenerator(config, db, processor, selector, assignment, setter, logger, quarantine)
+
+    // Resolve the subdirectory driving mode (imageSubdirectoryMode) and apply it as a
+    // selection-time pool restriction. Indexing stays unscoped on purpose so shared
+    // catalogs remain complete regardless of which mode each profile requests.
+    try {
+        const scope = resolvePoolScope(config.settings, { logger })
+        if (scope.condition) {
+            db.setScope({ condition: scope.condition, params: scope.params })
+        }
+        if (scope.effectiveMode !== "include") {
+            logger.info(
+                `Selection pool scoped by imageSubdirectoryMode="${scope.mode}"` +
+                (scope.chosenDir ? ` -- picked "${path.basename(scope.chosenDir)}"` : ""),
+                'main'
+            )
+        }
+    } catch (err) {
+        logger.error(err.message, 'main')
+        process.exit(1)
+    }
 
     // Setup graceful shutdown handler now that all dependencies are initialized
     const shutdown = setupGracefulShutdown({ indexer, db, generator, logger })

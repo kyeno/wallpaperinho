@@ -80,6 +80,11 @@ class ColorPaletteSelector extends SelectorBase {
         sql += poolSql
         params.push(...poolParams)
 
+        // Subdirectory-mode scope -- restrict results to the configured selection pool
+        const { sql: scopeSql, params: scopeParams } = this.buildScopeFilterClause()
+        sql += scopeSql
+        params.push(...scopeParams)
+
         // Exclude already-used IDs
         if (excludeIds.length > 0) {
             const placeholders = excludeIds.map(() => "?").join(", ")

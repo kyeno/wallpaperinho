@@ -55,6 +55,19 @@ export const config = {
     /** Accepted file extensions (lowercase, including dot) */
     imageExtensions: [".jpg", ".jpeg", ".png", ".webp"],
 
+    /**
+     * Subdirectory driving mode -- controls which images feed the SELECTION POOL relative to
+     * imageDirectories roots (applied at selection time; indexing/catalog stay complete):
+     *   - "include"       everything under the roots, recursively           (default)
+     *   - "flat"          only files directly inside a root directory
+     *   - "subdirsOnly"   skip loose root-level files; use subdirectories only
+     *   - "exclusiveFlat" pick ONE random first-level subdir per run -> its own files only
+     *   - "exclusiveDeep" pick ONE random first-level subdir per run -> its whole subtree
+     * Falls back to "include" when no eligible subdirectories exist. Directories listed in
+     * imageDirectoryExclusions never count as candidates for exclusive modes.
+     */
+    imageSubdirectoryMode: "include",
+
     // ===== Broken image quarantine =====
 
     /**

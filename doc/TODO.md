@@ -24,9 +24,7 @@
 
 | # | Issue | Severity | Status |
 |---|-------|----------|--------|
-| 1 | Database migration pattern only works on fresh DB | Medium | ⚠️ Confirmed |
-| 2 | Unnecessary async wrappers around sync methods | Low | ⚠️ Confirmed |
-| 3 | findRandomExcluding() doesn't filter by orientation | Low | ⚠️ Confirmed |
-| 4 | Aggressive ImageMagick stderr filtering hides real errors | Low | ⚠️ Confirmed |
-| 5 | No input validation on display dimensions | Medium | ⚠️ Confirmed |
-| 6 | No timeout on NCNN upscaler calls | Low | ⚠️ Confirmed |
+| 1 | findRandomExcluding() doesn't filter by orientation | Low | ⚠️ Confirmed |
+| 2 | Aggressive ImageMagick stderr filtering hides real errors | Low | ⚠️ Confirmed |
+| 3 | No input validation on display dimensions | Medium | ⚠️ Confirmed |
+| 4 | No timeout on NCNN upscaler calls | Low | ⚠️ Confirmed |

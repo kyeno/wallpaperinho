@@ -86,6 +86,8 @@ Note that `--directory` only replaces the selected profile's `imageDirectories` 
 | `imagickBin` | `string` | Direct path to your ImageMagick v7+ binary | `"/usr/bin/magick"` |
 | `imageMatchingStrategy` | `string \| string[]` | Active image selection strategy or an ordered array for chain filtering | `"gemini"` |
 | `imageDirectories` | `string[]` | Directories recursively scanned for source graphics | *(Profile-specific)* |
+| `imageDirectoryExclusions` | `string[]` | Directory basenames skipped during recursive scanning (and excluded as exclusive-mode candidates) | `["lowres", "_exclude"]` |
+| `imageSubdirectoryMode` | `"include" \| "flat" \| "subdirsOnly" \| "exclusiveFlat" \| "exclusiveDeep"` | Subdirectory driving mode -- narrows the **selection pool** relative to roots without touching indexing/catalogs; falls back to `include` when no eligible subdirectories exist | `"include"` |
 
 💡 Tip: For advanced algorithmic fine-tuning (like tweaking Canny edge detection steps or HSL distance multipliers), directly inspect the inline JSDoc documentation inside `etc/config.example.js`.
 

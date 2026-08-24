@@ -31,6 +31,8 @@ export const profiles = {
         imageDirectories: [
             "/media/Pictures/CARS_AND_BIKES/"
         ],
+        // Each run picks ONE random category folder (e.g., JDM / Rally) and uses its whole tree:
+        imageSubdirectoryMode: "exclusiveDeep",
         imageMatchingStrategy: ["contrast", "canny", "entropy"]
     },
 

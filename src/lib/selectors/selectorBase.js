@@ -134,6 +134,17 @@ class SelectorBase {
     }
 
     /**
+     * Build a SQL fragment restricting results to the active subdirectory driving-mode
+     * scope (`imageSubdirectoryMode`). No-op when no scope is set or mode is "include".
+     * @returns {{sql: string, params: Array}}
+     */
+    buildScopeFilterClause() {
+        const { condition, params } = this.db.getScopeClause?.() || { condition: "", params: [] }
+        if (!condition) return { sql: "", params: [] }
+        return { sql: ` AND ${condition}`, params }
+    }
+
+    /**
      * Collect ALL candidates within acceptable tolerance for a given orientation.
      * Unlike #findBySimilarity this does NOT apply a limit -- it returns everything found.
      * Used by intermediate steps in a strategy chain.

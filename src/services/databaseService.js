@@ -22,12 +22,16 @@ import path from "node:path"
  * Manages the SQLite database for image metadata storage and querying.
  * Handles schema initialization, batch inserts during indexing, and provides
  * query methods for image selection strategies (random, colorHSL, colorPalette, contrast, canny, entropy, gemini).
+ *
+ * All methods are synchronous (`node:sqlite` performs blocking IO); callers may still
+ * use `await` on them harmlessly, but new code should not wrap these calls in Promises.
  */
 class DatabaseService {
     #db = null
     #initialized = false
     #dbPath
     #logger
+    #scope = null
 
     /**
      * Create a new DatabaseService instance.
@@ -43,7 +47,7 @@ class DatabaseService {
      * Initialize the database connection and schema.
      * Creates the database file and images table if they do not exist.
      */
-    async initialize() {
+    initialize() {
         if (this.#initialized) {
             return
         }
@@ -74,13 +78,27 @@ class DatabaseService {
               )
             `)
 
-            // Migrations: add columns if missing (for existing databases)
-            try {
-                this.#db.exec("ALTER TABLE images ADD COLUMN canny INTEGER")
-            } catch {} // column already exists — ignore
-            try {
-                this.#db.exec("ALTER TABLE images ADD COLUMN palette TEXT")
-            } catch {} // column already exists — ignore
+            // Migrations: backfill any columns missing from older databases.
+            // PRAGMA table_info gives us the actual schema of whatever version created this file,
+            // so every metric column added since the original release is applied exactly once --
+            // existing rows keep their data (new columns default to NULL).
+            const expectedColumns = [
+                ["hue", "INTEGER"],
+                ["saturation", "INTEGER"],
+                ["lightness", "INTEGER"],
+                ["contrast", "INTEGER"],
+                ["entropy", "REAL"],
+                ["canny", "INTEGER"],
+                ["palette", "TEXT"],
+            ]
+            const existingColumns = new Set(
+                this.#db.prepare("PRAGMA table_info(images)").all().map((col) => col.name)
+            )
+            for (const [name, type] of expectedColumns) {
+                if (!existingColumns.has(name)) {
+                    this.#db.exec(`ALTER TABLE images ADD COLUMN ${name} ${type}`)
+                }
+            }
 
             this.#initialized = true
         } catch (err) {
@@ -98,12 +116,33 @@ class DatabaseService {
     }
 
     /**
+     * Set the active selection scope -- the subdirectory driving mode restriction
+     * resolved from `imageSubdirectoryMode` (see src/lib/poolScope.js).
+     * Applied automatically by every selection query method below; deliberately ignored
+     * by indexing/CRUD helpers (insertImage, removeImage, getImageFilesize) so catalogs
+     * stay complete regardless of which pool a profile requests.
+     * @param {{condition: string, params: Array}|null} scope - SQL WHERE fragment over images.path plus bound parameters, or null to clear.
+     */
+    setScope(scope) {
+        this.#scope = (scope && typeof scope.condition === "string" && scope.condition !== "") ? scope : null
+    }
+
+    /**
+     * Get the active scope clause for manual application in externally built SELECTs
+     * (e.g., strategy selector SQL builders). Returns an empty no-op when unset.
+     * @returns {{condition: string, params: Array}}
+     */
+    getScopeClause() {
+        return this.#scope || { condition: "", params: [] }
+    }
+
+    /**
      * Check if the image catalog is empty (no rows in the images table).
      * Useful to decide whether a full re-index should be triggered.
      * @returns {boolean} True if the images table contains zero rows.
      */
-    async isEmpty() {
-        await this.initialize()
+    isEmpty() {
+        this.initialize()
         const row = this.#db.prepare("SELECT COUNT(*) as count FROM images").get()
         return row.count === 0
     }
@@ -112,7 +151,7 @@ class DatabaseService {
      * Insert or replace an image record in the database.
      * @param {{path: string, width: number, height: number, filesize: number, hue?: number, saturation?: number, lightness?: number, contrast?: number, entropy?: number, canny?: number, palette?: string}} image - Image metadata.
      */
-    async insertImage(image) {
+    insertImage(image) {
         const stmt = this.#db.prepare(
             "INSERT OR REPLACE INTO images (path, width, height, filesize, hue, saturation, lightness, contrast, entropy, canny, palette) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
         )
@@ -123,7 +162,7 @@ class DatabaseService {
      * Remove an image record by path.
      * @param {string} filePath - Absolute path to the image.
      */
-    async removeImage(filePath) {
+    removeImage(filePath) {
         const stmt = this.#db.prepare("DELETE FROM images WHERE path = ?")
         stmt.run(filePath)
     }
@@ -165,7 +204,7 @@ class DatabaseService {
      * @param {number} [filters.exactHeight] - Exact height match.
      * @returns {Array<Object>} List of matching image records.
      */
-    async queryImages(filters) {
+    queryImages(filters) {
         let sql = "SELECT * FROM images"
         const conditions = []
         const params = []
@@ -189,6 +228,13 @@ class DatabaseService {
             }
         }
 
+        // Subdirectory-mode scope (imageSubdirectoryMode), when active
+        const { condition, params: scopeParams } = this.getScopeClause()
+        if (condition) {
+            conditions.push(condition)
+            params.push(...scopeParams)
+        }
+
         if (conditions.length > 0) {
             sql += " WHERE " + conditions.join(" AND ")
         }
@@ -205,7 +251,7 @@ class DatabaseService {
      * Find all vertical images (height > width).
      * @returns {Array<Object>} List of vertical image records.
      */
-    async findAllVertical() {
+    findAllVertical() {
         return this.findAllVerticalSync()
     }
 
@@ -214,7 +260,10 @@ class DatabaseService {
      * @returns {Array<Object>} List of vertical image records.
      */
     findAllVerticalSync() {
-        const rows = this.#db.prepare("SELECT * FROM images WHERE height > width").all()
+        const { condition, params } = this.getScopeClause()
+        let sql = "SELECT * FROM images WHERE height > width"
+        if (condition) sql += ` AND ${condition}`
+        const rows = this.#db.prepare(sql).all(...params)
         return rows || []
     }
 
@@ -222,7 +271,7 @@ class DatabaseService {
      * Find all horizontal images (width > height).
      * @returns {Array<Object>} List of horizontal image records.
      */
-    async findAllHorizontal() {
+    findAllHorizontal() {
         return this.findAllHorizontalSync()
     }
 
@@ -231,7 +280,10 @@ class DatabaseService {
      * @returns {Array<Object>} List of horizontal image records.
      */
     findAllHorizontalSync() {
-        const rows = this.#db.prepare("SELECT * FROM images WHERE width > height").all()
+        const { condition, params } = this.getScopeClause()
+        let sql = "SELECT * FROM images WHERE width > height"
+        if (condition) sql += ` AND ${condition}`
+        const rows = this.#db.prepare(sql).all(...params)
         return rows || []
     }
 
@@ -239,7 +291,7 @@ class DatabaseService {
      * Find all square images (width == height).
      * @returns {Array<Object>} List of square image records.
      */
-    async findAllSquare() {
+    findAllSquare() {
         return this.findAllSquareSync()
     }
 
@@ -248,7 +300,10 @@ class DatabaseService {
      * @returns {Array<Object>} List of square image records.
      */
     findAllSquareSync() {
-        const rows = this.#db.prepare("SELECT * FROM images WHERE width = height").all()
+        const { condition, params } = this.getScopeClause()
+        let sql = "SELECT * FROM images WHERE width = height"
+        if (condition) sql += ` AND ${condition}`
+        const rows = this.#db.prepare(sql).all(...params)
         return rows || []
     }
 
@@ -260,7 +315,7 @@ class DatabaseService {
      * Find a random image from the entire catalog.
      * @returns {Object|null} A random image record, or null if the table is empty.
      */
-    async findRandom() {
+    findRandom() {
         return this.findRandomSync()
     }
 
@@ -269,7 +324,11 @@ class DatabaseService {
      * @returns {Object|null} A random image record, or null if the table is empty.
      */
     findRandomSync() {
-        const row = this.#db.prepare("SELECT * FROM images ORDER BY RANDOM() LIMIT 1").get()
+        const { condition, params } = this.getScopeClause()
+        let sql = "SELECT * FROM images"
+        if (condition) sql += ` WHERE ${condition}`
+        sql += " ORDER BY RANDOM() LIMIT 1"
+        const row = this.#db.prepare(sql).get(...params)
         return row || null
     }
 
@@ -293,6 +352,13 @@ class DatabaseService {
             sql += " WHERE width > height"
         } else if (orientation === "square") {
             sql += " WHERE width = height"
+        }
+
+        // Subdirectory-mode scope (imageSubdirectoryMode), when active
+        const { condition: scopeCond, params: scopeParams } = this.getScopeClause()
+        if (scopeCond) {
+            sql += `${sql.includes("WHERE") ? " AND" : " WHERE"} ${scopeCond}`
+            params.push(...scopeParams)
         }
 
         // Exclude already-used paths
@@ -319,6 +385,11 @@ class DatabaseService {
             countSql += " WHERE width = height"
         }
 
+        if (scopeCond) {
+            countSql += `${countSql.includes("WHERE") ? " AND" : " WHERE"} ${scopeCond}`
+            countParams.push(...scopeParams)
+        }
+
         if (excludePaths.length > 0) {
             const placeholders = excludePaths.map(() => "?").join(", ")
             countSql += `${countSql.includes("WHERE") ? " AND" : " WHERE"} path NOT IN (${placeholders})`
@@ -340,9 +411,16 @@ class DatabaseService {
         let sql = `SELECT * FROM images`
         const params = []
 
+        // Subdirectory-mode scope (imageSubdirectoryMode), when active
+        const { condition: scopeCond, params: scopeParams } = this.getScopeClause()
+        if (scopeCond) {
+            sql += ` WHERE ${scopeCond}`
+            params.push(...scopeParams)
+        }
+
         if (excludePaths.length > 0) {
             const placeholders = excludePaths.map(() => "?").join(", ")
-            sql += ` WHERE path NOT IN (${placeholders})`
+            sql += `${sql.includes("WHERE") ? " AND" : " WHERE"} path NOT IN (${placeholders})`
             params.push(...excludePaths)
         }
 
@@ -355,9 +433,14 @@ class DatabaseService {
         let countSql = `SELECT COUNT(*) as cnt FROM images`
         const countParams = []
 
+        if (scopeCond) {
+            countSql += ` WHERE ${scopeCond}`
+            countParams.push(...scopeParams)
+        }
+
         if (excludePaths.length > 0) {
             const placeholders = excludePaths.map(() => "?").join(", ")
-            countSql += ` WHERE path NOT IN (${placeholders})`
+            countSql += `${countSql.includes("WHERE") ? " AND" : " WHERE"} path NOT IN (${placeholders})`
             countParams.push(...excludePaths)
         }
 
@@ -383,7 +466,7 @@ class DatabaseService {
     /**
      * Close the database connection and reset initialization state.
      */
-    async close() {
+    close() {
         if (this.#db) {
             this.#db.close()
             this.#db = null
