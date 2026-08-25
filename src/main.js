@@ -149,9 +149,16 @@ async function main() {
 
     if (values["list-profiles"]) {
         const profiles = ConfigService.listProfiles()
+        const eligible = new Set(ConfigService.listEligibleProfiles())
+        const width = profiles.length > 0 ? Math.max(...profiles.map((name) => name.length)) : 0
         console.log("Available profiles:")
         for (const name of profiles) {
-            console.log(`  - ${name}`)
+            const marker = eligible.has(name) ? "[in random pool]" : "[excluded from random]"
+            console.log(`  - ${name.padEnd(width)} ${marker}`)
+        }
+        if (profiles.length > 0 && eligible.size === 0) {
+            // Mirrors the runtime fallback warning below -- bare runs still work via the implicit default.
+            console.warn("[main] All profiles are excluded from random selection -- bare runs fall back to the first profile")
         }
         return
     }

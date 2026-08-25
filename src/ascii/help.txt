@@ -19,7 +19,8 @@ OPTIONS:
                           the default when no --profile is given; kept for explicit crontab lines.
                           Profiles may opt out with "excludeFromRandom: true".
   --cron                  Unattended mode: implies --silent + --random
-  --list-profiles         List available profiles and exit
+  --list-profiles         List available profiles, marking which join the random rotation vs those
+                           excluded from it ("excludeFromRandom"), and exit
   --help                  Show this help message and exit
 
 EXAMPLES:
