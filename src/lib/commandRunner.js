@@ -13,6 +13,9 @@
  *     semantics as the generic fallback
  *   - throw structured CommandError instances carrying classified lines plus a CONCISE
  *     message, so upstream catch blocks log one clean line instead of a multi-line dump
+ *   - map Node's timeout-kill signature (killed + SIGTERM, no exit code) onto the stable
+ *     "ERR_CHILD_PROCESS_TIMEOUT" code when a timeout was requested, so callers can
+ *     distinguish "timed out" from other failures
  *
  * Severity policy (most specific first):
  *   1. known-benign noise patterns are dropped entirely
@@ -33,6 +36,9 @@ import { execFile, spawnSync } from "node:child_process"
 import { promisify } from "node:util"
 
 const execFileAsync = promisify(execFile)
+
+/** Stable failure code used when a child process was killed by its configured timeout. */
+export const TIMEOUT_FAILURE_CODE = "ERR_CHILD_PROCESS_TIMEOUT"
 
 /** Noise patterns that carry no diagnostic value (dropped before classification). */
 export const NOISE_PATTERNS = [
@@ -135,6 +141,29 @@ function normalizeCode(errOrResult) {
 }
 
 /**
+ * Resolve a child-process failure into a displayable exit status. When we requested a
+ * timeout and the child was killed by it (Node reports that as killed=true + SIGTERM with
+ * no exit code), map the signature onto a stable identifier callers can match on.
+ * @param {*} errOrResult - The thrown error or spawnSync result object.
+ * @param {{timeout?: number}} [options={}] - Options originally passed to child_process.
+ * @returns {*|string} Exit status (number/errno string) or "ERR_CHILD_PROCESS_TIMEOUT".
+ */
+function resolveFailureCode(errOrResult, options = {}) {
+    if ((options?.timeout ?? 0) > 0) {
+        const r = errOrResult ?? {}
+        // A child killed by its own timeout never reports an integer exit status. Node
+        // surfaces that kill differently per API/version (execFile: killed + SIGTERM with
+        // no code; spawnSync: error.code ETIMEDOUT or ERR_CHILD_PROCESS_TIME(D)?OUT), so
+        // match on "no normal exit" plus either the SIGTERM signature or a *TIME*OUT code.
+        const exitedWithStatus = Number.isInteger(r.status) || Number.isInteger(r.code)
+        if (!exitedWithStatus && (r.signal === "SIGTERM" || /TIME(D)?OUT/i.test(String(r.code ?? "")))) {
+            return TIMEOUT_FAILURE_CODE
+        }
+    }
+    return normalizeCode(errOrResult)
+}
+
+/**
  * Run an external command asynchronously; resolves with captured output on success.
  * @param {string} bin - Executable path/name.
  * @param {string[]} args - Argument list.
@@ -148,7 +177,7 @@ export async function runCommand(bin, args, options = {}) {
         return { stdout: result.stdout.toString(), stderr: result.stderr?.toString() ?? "" }
     } catch (err) {
         throw new CommandError(
-            bin, args, normalizeCode(err),
+            bin, args, resolveFailureCode(err, options),
             err.stdout?.toString(), err.stderr?.toString()
         )
     }
@@ -165,8 +194,13 @@ export async function runCommand(bin, args, options = {}) {
 export function runCommandSync(bin, args, options = {}) {
     const result = spawnSync(bin, args, options)
     if (result.error || result.status !== 0) {
+        // Preserve errno-like codes from spawn errors while keeping the result's signal/kill
+        // info visible so resolveFailureCode can recognize timeout kills either way.
+        const source = result.error
+            ? { code: result.error.code, status: null, signal: result.signal, killed: result.killed }
+            : result
         throw new CommandError(
-            bin, args, normalizeCode(result.error ? { code: result.error.code } : result),
+            bin, args, resolveFailureCode(source, options),
             result.stdout?.toString(), result.stderr?.toString()
         )
     }

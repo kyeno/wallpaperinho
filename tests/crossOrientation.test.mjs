@@ -204,7 +204,7 @@ try {
 }
 
 if (failures > 0) {
-    console.error(`\n[crossOrientation] FAILED — ${failures} case(s)`)
+    console.error(`\n[crossOrientation] FAILED - ${failures} case(s)`)
     if (process.env.DEBUG_TESTS) {
         console.error("\n--- captured log ---")
         messages.slice(-60).forEach((m) => console.error("  " + m))

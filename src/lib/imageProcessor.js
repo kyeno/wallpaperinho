@@ -16,7 +16,10 @@ import { execFileSync } from "node:child_process"
 import fs from "node:fs"
 import path from "node:path"
 
-import { runCommand, runCommandSync, classifyStderr, emitClassified } from "./commandRunner.js"
+import { runCommand, runCommandSync, classifyStderr, emitClassified, TIMEOUT_FAILURE_CODE } from "./commandRunner.js"
+
+/** Default per-pass NCNN wall-clock limit (ms); CPU/GPU inference on large sources can be slow. */
+const DEFAULT_NCNN_TIMEOUT_MS = 600_000 // 10 minutes
 
 /**
  * Check if ImageMagick v7+ is available and executable.
@@ -424,6 +427,8 @@ class ImageProcessor {
 
     /**
      * Upscale an image using Real-ESRGAN ncnn-vulkan.
+     * Bounded by a per-pass wall-clock timeout (`ncnnUpscalerTimeoutMs`, default 600 s) so a
+     * hung GPU/driver fails fast instead of stalling the pipeline indefinitely.
      * @param {string} inputPath
      * @param {string} outputPath
      */
@@ -448,11 +453,24 @@ class ImageProcessor {
             return
         }
 
-        this.logger.debug(`Running ncnn upscale: ${bin} ${args.join(" ")}`, 'ImageProcessor')
+        // Per-pass wall-clock limit: a stuck Vulkan driver or wedged GPU must not hang forever.
+        const s = this.config?.settings ?? {}
+        let timeoutMs = Number(s.ncnnUpscalerTimeoutMs)
+        if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) timeoutMs = DEFAULT_NCNN_TIMEOUT_MS
+
+        this.logger.debug(
+            `Running ncnn upscale (${timeoutMs} ms per-pass timeout): ${bin} ${args.join(" ")}`, 'ImageProcessor'
+        )
         try {
-            await runCommand(bin, args)
+            await runCommand(bin, args, { timeout: timeoutMs })
         } catch (err) {
             emitClassified(this.logger, err.classified, 'ImageProcessor')
+            if (err.code === TIMEOUT_FAILURE_CODE) {
+                throw new Error(
+                    `NCNN upscaler timed out after ${timeoutMs} ms for ${inputPath} ` +
+                    `(raise ncnnUpscalerTimeoutMs in etc/config.js if passes legitimately take longer)`
+                )
+            }
             throw new Error(`NCNN upscaler failed for ${inputPath}: ${err.message}`)
         }
 

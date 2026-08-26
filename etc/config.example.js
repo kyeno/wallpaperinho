@@ -138,4 +138,11 @@ export const config = {
 
     /** Maximum chained NCNN passes per display before falling back to ImageMagick scaling */
     ncnnMaxUpscalePasses: 3,
+
+    /**
+     * Per-pass wall-clock timeout for the upscaler binary (milliseconds). A hung GPU or stuck
+     * Vulkan driver otherwise stalls the entire pipeline indefinitely. Applies to EACH chained
+     * pass, not the total run. Invalid/missing values fall back to 600000 (10 minutes).
+     */
+    ncnnUpscalerTimeoutMs: 600000,
 }

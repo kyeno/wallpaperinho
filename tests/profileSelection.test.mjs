@@ -376,7 +376,7 @@ await runCase("poolDir merges over a prior profile-only call; unscoped runs stil
 // ---- Summary ----
 console.log(`\n${"=".repeat(50)}`)
 if (failures > 0) {
-    console.error(`[profileSelection] FAILED — ${failures} case(s) failed`)
+    console.error(`[profileSelection] FAILED - ${failures} case(s) failed`)
     process.exit(1)
 }
 console.log("[profileSelection] All cases passed")

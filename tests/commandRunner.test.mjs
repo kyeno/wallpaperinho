@@ -8,7 +8,7 @@
  */
 
 import assert from "node:assert/strict"
-import { classifyStderr, runCommand, runCommandSync, CommandError } from "../src/lib/commandRunner.js"
+import { classifyStderr, runCommand, runCommandSync, CommandError, TIMEOUT_FAILURE_CODE } from "../src/lib/commandRunner.js"
 
 let failures = 0
 async function runCase(name, fn) {
@@ -97,6 +97,30 @@ await runCase("missing binary -> CommandError carrying errno-like code", async (
     }
 })
 
+await runCase("timeout kill -> CommandError with ERR_CHILD_PROCESS_TIMEOUT code", async () => {
+    const t0 = Date.now()
+    try {
+        await runCommand("/bin/sh", ["-c", "sleep 30"], { timeout: 300 })
+        assert.fail("expected throw")
+    } catch (err) {
+        assert.ok(err instanceof CommandError)
+        assert.equal(String(err.code), TIMEOUT_FAILURE_CODE)
+        assert.ok(Date.now() - t0 < 10_000, `should be killed at ~300 ms, took ${Date.now() - t0} ms`)
+    }
+})
+
+await runCase("runCommandSync honors timeout and maps the same failure code", () => {
+    let threw = false
+    try {
+        runCommandSync("/bin/sh", ["-c", "sleep 30"], { timeout: 300 })
+    } catch (err) {
+        threw = true
+        assert.ok(err instanceof CommandError)
+        assert.equal(String(err.code), TIMEOUT_FAILURE_CODE)
+    }
+    assert.ok(threw, "sync timeout should throw")
+})
+
 await runCase("runCommandSync mirrors the async wrapper behavior", () => {
     const ok = runCommandSync("/bin/sh", ["-c", "echo OUT && echo NOISY >&2"])
     assert.match(ok.stdout, /OUT/)
@@ -118,7 +142,7 @@ await runCase("runCommandSync mirrors the async wrapper behavior", () => {
 // ---- Summary ----
 console.log(`\n${"=".repeat(50)}`)
 if (failures > 0) {
-    console.error(`[commandRunner] FAILED — ${failures} case(s) failed`)
+    console.error(`[commandRunner] FAILED - ${failures} case(s) failed`)
     process.exit(1)
 }
 console.log("[commandRunner] All cases passed")

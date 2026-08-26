@@ -141,7 +141,7 @@ export default class GeminiQwenSelector extends SelectorBase {
     // ---------------------------------------------------------------
 
     /**
-     * Fisher-Yates shuffle — returns a new shuffled array without mutating the original.
+     * Fisher-Yates shuffle - returns a new shuffled array without mutating the original.
      * @param {Object[]} array - Array to shuffle.
      * @returns {Object[]} New shuffled copy of the input array.
      * @private
@@ -254,7 +254,7 @@ export default class GeminiQwenSelector extends SelectorBase {
     }
 
     // ---------------------------------------------------------------
-    // Public API — overrides of SelectorBase contract
+    // Public API - overrides of SelectorBase contract
     // ---------------------------------------------------------------
 
     /**

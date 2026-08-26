@@ -18,7 +18,7 @@ Compilation has been successfully tested on a **modern Gentoo Linux system** wit
 | CMake | 4.3.3 |
 | Vulkan (headers, tools, loader) | 1.4.341.0 |
 
-The build was validated against **NVIDIA proprietary drivers** (with CUDA support). Vulkan is the primary acceleration backend used at runtime — CUDA itself is not directly required by esrgan-ncnn, but the NVIDIA driver stack must include proper Vulkan support.
+The build was validated against **NVIDIA proprietary drivers** (with CUDA support). Vulkan is the primary acceleration backend used at runtime - CUDA itself is not directly required by esrgan-ncnn, but the NVIDIA driver stack must include proper Vulkan support.
 
 #### System Dependencies (Gentoo Linux)
 
@@ -117,6 +117,7 @@ Set the following configuration properties in `etc/config.js` to enable AI upsca
 | `ncnnUpscalerFlags` | Optional free-form string of extra flags (shell-split before input/output args), e.g., `"-g 0"`. |
 | `ncnnUpscaleTolerance` | Iterative-upscale stop threshold (default `"0.95"`): passes are chained until both dimensions reach at least this fraction of the target display size. |
 | `ncnnMaxUpscalePasses` | Safety cap on chained NCNN passes per display (default `3`). |
+| `ncnnUpscalerTimeoutMs` | Per-pass wall-clock timeout in milliseconds (default `600000`, i.e. 10 minutes). A hung GPU or stuck Vulkan driver is killed and reported as an error instead of stalling the whole run; applies to each chained pass individually. |
 
 The actual command-line arguments are assembled automatically from these properties at runtime via `config.getNcnnUpscalerCommand(inputPath, outputPath)`. You can also override any of these values per-profile in `etc/profiles.js`.
 
@@ -132,7 +133,7 @@ Behavior matrix:
 
 | Situation | What happens |
 |-----------|--------------|
-| Image already ≥ tolerance of both target dims | No NCNN pass at all — straight to fit-exact resize/crop |
+| Image already ≥ tolerance of both target dims | No NCNN pass at all - straight to fit-exact resize/crop |
 | NCNN configured, image smaller than needed | Chained NCNN passes until within tolerance, then ImageMagick closes the ≤5% gap |
 | NCNN disabled (`ncnnUpscalerBin: ""`) or binary missing | ImageMagick does the full upscale itself (works, but visibly softer on large gaps) |
 

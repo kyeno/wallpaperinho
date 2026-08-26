@@ -6,9 +6,9 @@
  * Walks the src/ directory recursively and checks .js, .mjs, and .cjs files.
  *
  * Exit codes:
- *   0 — All files pass syntax validation
- *   1 — One or more files failed
- *   2 — Internal error (e.g., missing src/ directory)
+ *   0 - All files pass syntax validation
+ *   1 - One or more files failed
+ *   2 - Internal error (e.g., missing src/ directory)
  *
  * Usage:
  *   node tests/check-syntax.mjs
@@ -120,7 +120,7 @@ console.log(`Total: ${files.length} | Passed: ${passed.length} | Failed: ${failu
 console.log("=".repeat(50))
 
 if (failures > 0) {
-    console.error(`\n[check-syntax] FAILED — ${failures} file(s) have syntax errors`)
+    console.error(`\n[check-syntax] FAILED - ${failures} file(s) have syntax errors`)
     process.exit(1)
 }
 

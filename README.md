@@ -133,9 +133,10 @@ To toggle upscaling, map the binaries in `etc/config.js`:
 ncnnUpscalerBin: "/usr/local/esrgan-ncnn/bin/realesrgan-ncnn-vulkan",
 ncnnUpscalerModelDir: "/home/kyeno/AI/models/ncnn/",
 ncnnUpscalerModel: "4xNomos8kSC",
-ncnnUpscalerScale: "4"
+ncnnUpscalerScale: "4",
+ncnnUpscalerTimeoutMs: 600000
 ```
-*Set `ncnnUpscalerBin: ""` to completely bypass the upscaling pipeline.*
+*Set `ncnnUpscalerBin: ""` to completely bypass the upscaling pipeline. Each NCNN pass is bounded by `ncnnUpscalerTimeoutMs` (default **10 minutes**) so a hung GPU or stuck Vulkan driver fails fast with a clear error instead of stalling the whole run - raise it if your hardware legitimately needs longer per pass.*
 
 ---
 

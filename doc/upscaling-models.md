@@ -17,9 +17,9 @@ This archive contains dozens of pre-trained ncnn models covering photography, an
 
 ### Low-Resolution, Grainy, or Compressed Images
 
-If your wallpaper directory consists of rather low-res, grainy images — for example, Facebook-downloaded "Liminal Spaces" or Pictorialism photos — finding the right model may require experimentation. The following are general recommendations ranked by suitability:
+If your wallpaper directory consists of rather low-res, grainy images - for example, Facebook-downloaded "Liminal Spaces" or Pictorialism photos - finding the right model may require experimentation. The following are general recommendations ranked by suitability:
 
-#### 1. `4xNomos8kSC` — **Best for Compressed Web Photography**
+#### 1. `4xNomos8kSC` - **Best for Compressed Web Photography**
 
 This is the exact model you want for this specific job.
 
@@ -27,11 +27,11 @@ This is the exact model you want for this specific job.
 
 **Why it's perfect here:** It was built precisely to take compressed web photos, remove square JPEG macroblocks, and restore smooth gradients and realistic photographic textures. It handles grain elegantly without scrubbing away the haunting atmospheric depth that liminal spaces and pictorialism depend on.
 
-#### 2. `ultrasharp-4x` — **Community Gold Standard**
+#### 2. `ultrasharp-4x` - **Community Gold Standard**
 
 The community gold-standard general photography model. It strikes a flawless balance between removing compression artifacts and maintaining sharp geometric lines (like corners, doors, and long corridors in liminal architecture). It is a highly safe, highly reliable default.
 
-#### 3. `4x_NMKD-Superscale-SP_178000_G` / `4x_NMKD-Siax_200k` — **Texture Preservation Specialists**
+#### 3. `4x_NMKD-Superscale-SP_178000_G` / `4x_NMKD-Siax_200k` - **Texture Preservation Specialists**
 
 The NMKD models are legendary for texture preservation. If your image has a lot of film grain, concrete texture, carpets, or mist, NMKD models focus on reconstructing those micro-details rather than just smoothing everything over. Use these when you want to preserve or enhance surface detail instead of producing clean, polished output.
 
@@ -55,7 +55,7 @@ These models will produce noticeably better results on drawn content than photog
 
 If your source images are already high-quality and you simply need more pixels (e.g., for fitting a large display), use:
 
-#### `4xLSDIR` — **Lossless-Style Directional Upscaler**
+#### `4xLSDIR` - **Lossless-Style Directional Upscaler**
 
 Designed for clean, already-pristine images. LSDIR focuses on directional interpolation that preserves existing sharpness without adding artificial texture or hallucinating detail. Use this when you want faithful enlargement without stylistic changes.
 

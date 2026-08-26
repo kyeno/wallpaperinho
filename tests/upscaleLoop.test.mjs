@@ -30,7 +30,7 @@ try {
     magickOk = /ImageMagic[k]?s?\s+7\./i.test(execFileSync(MAGICK, ["--version"]).toString().split("\n")[0])
 } catch {}
 if (!magickOk) {
-    console.log("[upscaleLoop] SKIP — ImageMagick v7+ not found")
+    console.log("[upscaleLoop] SKIP - ImageMagick v7+ not found")
     process.exit(0)
 }
 
@@ -41,7 +41,7 @@ try {
     ncnnAvailable = true
 } catch {}
 if (!ncnnAvailable) {
-    console.log("[upscaleLoop] SKIP — NCNN binary/model not available (IM-only mode is covered by generatePipeline)")
+    console.log("[upscaleLoop] SKIP - NCNN binary/model not available (IM-only mode is covered by generatePipeline)")
     process.exit(0)
 }
 
@@ -101,10 +101,29 @@ try {
     assert.equal(resB.intermediates.length, 0)
     console.log("  ✓ already-large source skips NCNN entirely")
 
+    // Case C -- per-pass timeout kills a hung upscaler quickly instead of stalling forever.
+    // Fake "ncnn" binary that sleeps far longer than the configured timeout; no GPU needed.
+    const slowBin = path.join(workDir, "slow-ncnn.sh")
+    fs.writeFileSync(slowBin, "#!/bin/sh\nexec sleep 30\n", { mode: 0o755 })
+    const slowSettings = { ...settings, ncnnUpscalerBin: slowBin, ncnnUpscalerTimeoutMs: 300 }
+    const slowProcessor = new ImageProcessor(makeConfig(slowSettings), logger)
+    const t0 = Date.now()
+    let cErr = null
+    try {
+        await slowProcessor.upscale(smallSrc, path.join(workDir, "loop-c.png"))
+    } catch (err) {
+        cErr = err
+    }
+    const elapsedC = Date.now() - t0
+    assert.ok(cErr, "hung upscaler was expected to fail with a timeout error")
+    assert.match(String(cErr.message), /timed out/i, `unexpected error message: ${cErr.message}`)
+    assert.ok(elapsedC < 10_000, `timeout should kill the process well before its 30 s sleep, took ${elapsedC} ms`)
+    console.log(`  ✓ hung upscaler killed in ~${elapsedC} ms (per-pass timeout=300 ms)`)
+
     for (const f of [...resA.intermediates]) fs.rmSync(f, { force: true })
     console.log("\n[upscaleLoop] All assertions passed")
 } catch (err) {
-    console.error(`\n[upscaleLoop] FAILED — ${err.message}`)
+    console.error(`\n[upscaleLoop] FAILED - ${err.message}`)
     process.exitCode = 1
 } finally {
     fs.rmSync(workDir, { recursive: true, force: true })

@@ -152,7 +152,7 @@ await runCase("uncreatable quarantine dir returns null without throwing", () => 
 // ---- Summary ----
 console.log(`\n${"=".repeat(50)}`)
 if (failures > 0) {
-    console.error(`[quarantine] FAILED — ${failures} case(s) failed`)
+    console.error(`[quarantine] FAILED - ${failures} case(s) failed`)
     process.exit(1)
 }
 console.log("[quarantine] All cases passed")

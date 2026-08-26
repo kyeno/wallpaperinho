@@ -46,7 +46,7 @@ try {
 } catch {}
 
 if (!magickOk) {
-    console.log("[generatePipeline] SKIP — ImageMagick v7+ not found at", MAGICK)
+    console.log("[generatePipeline] SKIP - ImageMagick v7+ not found at", MAGICK)
     process.exit(0)
 }
 
@@ -226,7 +226,7 @@ try {
     console.log("\n[generatePipeline] All assertions passed")
 } catch (err) {
     failures++
-    console.error(`\n[generatePipeline] FAILED — ${err.message}`)
+    console.error(`\n[generatePipeline] FAILED - ${err.message}`)
     if (process.env.DEBUG_TESTS) {
         console.error("--- captured log ---")
         messages.slice(-60).forEach((m) => console.error("  " + m))

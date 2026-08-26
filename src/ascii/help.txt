@@ -1,4 +1,4 @@
-wallpaperinho — Programmatic multi-monitor wallpaper automation.
+wallpaperinho - Programmatic multi-monitor wallpaper automation.
 
 USAGE:
   bin/wallpaperinho [options]
