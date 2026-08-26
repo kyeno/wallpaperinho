@@ -32,6 +32,7 @@ import WallpaperGenerator from "./lib/wallpaperGenerator.js"
 import WallpaperSetter from "./lib/wallpaperSetter.js"
 import QuarantineService from "./lib/quarantineService.js"
 import { resolvePoolScope } from "./lib/poolScope.js"
+import { ConfigValidationError } from "./lib/displayConfig.js"
 
 const DB_DIR = path.resolve(__dirname, "..", "var", "db")
 const STATE_FILE = path.resolve(__dirname, "..", "var", "state", "last-profile.json")
@@ -188,13 +189,22 @@ async function main() {
     // --- DI Composition Root ---
 
     // 1. Initialize configuration with profile and CLI overrides in one call
-    const config = new ConfigService(profileArg, {
-        debug: values.debug,
-        strategy: values.strategy,
-        imageDirectories: Array.isArray(values.directory) && values.directory.length > 0
-            ? values.directory
-            : null,
-    })
+    let config
+    try {
+        config = new ConfigService(profileArg, {
+            debug: values.debug,
+            strategy: values.strategy,
+            imageDirectories: Array.isArray(values.directory) && values.directory.length > 0
+                ? values.directory
+                : null,
+        })
+    } catch (err) {
+        if (err instanceof ConfigValidationError) {
+            console.error(`\n[FATAL] ${err.message}`)
+            process.exit(1)
+        }
+        throw err
+    }
 
     // 2. Initialize logger (has its own TTY-based color detection).
     //    --silent/--cron raise the minimum level to WARN (banner/info/debug hidden,

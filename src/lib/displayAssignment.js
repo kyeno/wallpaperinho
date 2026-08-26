@@ -11,6 +11,8 @@
  * @license MIT
  */
 
+import { validateDisplays } from "./displayConfig.js"
+
 /**
  * Represents a single display slot with its required dimensions and orientation.
  * Tracks which image has been assigned to this slot along with debug metadata.
@@ -51,6 +53,10 @@ class DisplayAssignment {
      */
     constructor(displays, logger) {
         this.logger = logger || console
+
+        // Defense in depth: ConfigService already validates at startup; this keeps the
+        // library safe for direct consumers/tests that build it with raw arrays.
+        validateDisplays(displays)
 
         const slots = []
 

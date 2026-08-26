@@ -25,4 +25,3 @@
 |---|-------|----------|--------|
 | 1 | findRandomExcluding() doesn't filter by orientation | Low | ⚠️ Confirmed |
 | 2 | Aggressive ImageMagick stderr filtering hides real errors | Low | ⚠️ Confirmed |
-| 3 | No input validation on display dimensions | Medium | ⚠️ Confirmed |

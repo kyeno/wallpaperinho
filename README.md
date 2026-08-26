@@ -79,7 +79,7 @@ Note that `--directory` only replaces the selected profile's `imageDirectories` 
 | Key | Type | Description | Default |
 |-----|------|-------------|---------|
 | `debugOverlay` | `boolean` | Renders a diagnostic text overlay on images during processing | `false` |
-| `displays` | `[number, number][]` | Monitor resolutions configured left-to-right as `[width, height]` tuples | `[[1080, 1920], [2560, 1600], [1080, 1920]]` |
+| `displays` | `[number, number][]` | Monitor resolutions configured left-to-right as `[width, height]` pixel tuples; validated at startup - malformed entries abort with an index-named error | `[[1080, 1920], [2560, 1600], [1080, 1920]]` |
 | `monitorAlignment` | `"top" \| "bottom" \| "center"` | Vertical alignment strategy for mixed-size displays | `"bottom"` |
 | `wallpaperOutputDirectory` | `string` | Directory where final composite wallpapers are saved | `"/home/kyeno/Pictures/Wallpapers/"` |
 | `tempDirectory` | `string` | Location for temporary processing artifacts | `"/tmp/wallpaperinho"` |

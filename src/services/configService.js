@@ -19,6 +19,7 @@ import path from "node:path"
 import { fileURLToPath } from "node:url"
 
 import { getEligibleProfileNames, selectRandomProfile, RANDOM_EXCLUDE_KEY } from "../lib/profilePicker.js"
+import { validateDisplays } from "../lib/displayConfig.js"
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const ETC_DIR = path.resolve(__dirname, "..", "..", "etc")
@@ -106,6 +107,10 @@ class ConfigService {
         if (cliOverrides.debug) {
             this.settings.debugOverlay = true
         }
+
+        // Fail fast on malformed display dimensions before any service consumes them;
+        // otherwise they surface later as obscure ImageMagick geometry errors.
+        validateDisplays(this.settings.displays)
     }
 
     /**
