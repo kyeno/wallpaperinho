@@ -170,7 +170,7 @@ Targeted directory automation with custom strategy routing (`--directory` replac
 ./bin/wallpaperinho --directory "/path/to/my/images" --strategy "gemini" --debug
 ```
 
-Unattended mode -- warnings and errors are still shown (sized for cron mail capture) plus explicit random-profile selection, ideal for crontab:
+Unattended mode -- info/debug output hidden; warnings and errors stay visible as plain `[WARN]`/`[ERR]`-prefixed lines without ANSI colors (sized for cron mail), plus explicit random-profile selection. Ideal for crontab:
 ```bash
 ./bin/wallpaperinho --cron
 # equivalent to: ./bin/wallpaperinho --silent --random
@@ -193,6 +193,7 @@ Notes:
 - If multiple graphical sessions are logged in simultaneously, the first one found wins.
 - Overlapping runs are guarded by an exclusive lock (`flock`): if a previous instance is still processing (e.g., AI upscaling outlives your cron interval), new invocations log a notice (suppressed under `--silent`/`--cron`) and exit cleanly instead of corrupting shared temp files or catalog state.
 - The wrapper needs `node` reachable through cron's default `PATH` (`/usr/bin:/bin`) -- if you manage Node via nvm/asdf/mise, use the absolute path to the binary or export `PATH` inside the crontab line.
+- Under `--silent`/`--cron`, log output switches from colored tags to plain text with severity prefixes (`[DEBUG]`, `[INFO]`, `[WARN]`, `[ERR]`) so cron mail stays readable and greppable instead of carrying raw `^[[33m...` escape sequences. Interactive runs keep the colored output exactly as before. Each warning/error line in that mode also carries a compact context trailer naming the active profile and the effective selection pool -- the picked subdirectory when `exclusiveFlat`/`exclusiveDeep` scoping is active, otherwise the configured roots -- so any single line is enough to debug pool exhaustion or failures.
 
 ### Broken Image Quarantine
 

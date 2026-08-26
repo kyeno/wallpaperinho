@@ -14,7 +14,8 @@ OPTIONS:
                           strategies, upscaler model/args etc. still come from the profile.
   --strategy <name>       Override matching strategy (random|colorHSL|colorPalette|contrast|canny|entropy|gemini)
   --silent                Unattended mode: hide banner/info/debug output; warnings and
-                           errors are still shown (sized for cron mail capture)
+                          errors stay visible as plain "[WARN]"/"[ERR]"-prefixed lines without ANSI colors (sized for cron mail capture);
+                          each such line also names the active profile + effective selection pool (picked subdir under exclusive modes) for easier debugging
   --random                Pick a random eligible profile before generating. This is already
                           the default when no --profile is given; kept for explicit crontab lines.
                           Profiles may opt out with "excludeFromRandom: true".

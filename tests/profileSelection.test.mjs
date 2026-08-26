@@ -7,7 +7,8 @@
  *     all-excluded fallback, no-repeat rotation, empty-pool edge cases
  *   - src/services/configService.js : meta-key (excludeFromRandom) never leaking into
  *     .settings, and --directory mode still inheriting profile strategies/upscaler
- *   - src/services/loggerService.js : minimum-level filtering (--silent behavior)
+ *   - src/services/loggerService.js : minimum-level filtering (--silent behavior) and
+ *     plain [LEVEL]-prefix output mode used by unattended runs (--silent/--cron)
  *
  * No ImageMagick/NCNN/display required. Exit codes: 0 = pass, 1 = fail.
  *
@@ -231,6 +232,145 @@ await runCase('minLevel "warn" keeps warn+error only', () => {
 
 await runCase("unknown level name throws a clear RangeError", () => {
     assert.throws(() => new LoggerService(configStub, "verbose"), RangeError)
+})
+
+console.log("\n[profileSelection] logger plain-level prefix mode (--silent/--cron)")
+
+await runCase('prefix mode formats "[LEVEL] [Tag] message" exactly', () => {
+    const logger = new LoggerService(configStub, "warn", true)
+    const calls = captureConsole(() => {
+        logger.warn("pool exhausted", "RandomSelector")
+        logger.error("generation failed", "main")
+    })
+    assert.equal(calls.length, 2, `expected warn+error to emit, got: ${calls.map((c) => c[0]).join(", ") || "(nothing)"}`)
+    assert.deepEqual(
+        calls.map((c) => c.slice(1)),
+        [
+            ["[WARN] [RandomSelector] pool exhausted [imageDirs=/some/base/dir]"],
+            ["[ERR] [main] generation failed [imageDirs=/some/base/dir]"],
+        ],
+        `got: ${JSON.stringify(calls.map((c) => c.slice(1)))}`)
+})
+
+await runCase("prefix mode prefixes untagged lines and maps log/info to [INFO]", () => {
+    const logger = new LoggerService(configStub, "debug", true)
+    const calls = captureConsole(() => {
+        logger.debug("dbg line")
+        logger.log("plain log line")
+        logger.info("info line")
+    })
+    assert.deepEqual(
+        calls.map((c) => c[1]),
+        ["[DEBUG] dbg line", "[INFO] plain log line", "[INFO] info line"],
+        `got: ${JSON.stringify(calls.map((c) => c[1]))}`)
+})
+
+await runCase("prefix mode emits no ANSI escape codes anywhere", () => {
+    const logger = new LoggerService(configStub, "warn", true)
+    const calls = captureConsole(() => {
+        logger.warn("w", "Tag")
+        logger.error("e")
+    })
+    for (const call of calls) {
+        for (let i = 1; i < call.length; i++) {
+            assert.ok(!String(call[i]).includes("\x1b"), `expected no ANSI escapes in prefix-mode output, got: ${JSON.stringify(String(call[i]))}`)
+        }
+    }
+})
+
+await runCase("default construction keeps colored behavior when stdout is a TTY", () => {
+    const logger = new LoggerService(configStub)
+    const calls = captureConsole(() => { logger.warn("w") })
+    assert.equal(calls.length, 1)
+    const hasEscapes = String(calls[0][1]).includes("\x1b")
+    if (process.stdout.isTTY === false) {
+        assert.ok(!hasEscapes, "expected no ANSI escapes when stdout is not a TTY")
+    } else {
+        assert.ok(hasEscapes, "expected ANSI escapes in default mode on a TTY/piped stdout")
+    }
+})
+
+console.log("\n[profileSelection] logger run-context trailer (--silent/--cron)")
+
+await runCase("warn/error lines carry [profile=... imageDirs=...] trailer in prefix mode", () => {
+    const logger = new LoggerService(configStub, "warn", true)
+    logger.setRunContext({ profile: "liminal" })
+    const calls = captureConsole(() => {
+        logger.warn("vertical pool exhausted (1 total, 1 used)", "RandomSelector")
+        logger.error("Wallpaper generation failed", "main")
+    })
+    assert.deepEqual(
+        calls.map((c) => c.slice(1)),
+        [
+            ["[WARN] [RandomSelector] vertical pool exhausted (1 total, 1 used) [profile=liminal imageDirs=/some/base/dir]"],
+            ["[ERR] [main] Wallpaper generation failed [profile=liminal imageDirs=/some/base/dir]"],
+        ],
+        `got: ${JSON.stringify(calls.map((c) => c.slice(1)))}`)
+})
+
+await runCase("no trailer when setRunContext was never called and no dirs configured", () => {
+    const bareCfg = { settings: {} }
+    const logger = new LoggerService(bareCfg, "warn", true)
+    const calls = captureConsole(() => {
+        logger.warn("w", "Tag")
+        logger.error("e")
+    })
+    assert.deepEqual(
+        calls.map((c) => c.slice(1)),
+        [["[WARN] [Tag] w"], ["[ERR] e"]],
+        `got: ${JSON.stringify(calls.map((c) => c.slice(1)))}`)
+})
+
+await runCase("info/debug lines stay clean in prefix mode; multi-dir context joins with commas", () => {
+    const multiCfg = { settings: { imageDirectories: ["/a/b", "/a/c"] } }
+    const logger = new LoggerService(multiCfg, "debug", true)
+    logger.setRunContext({ profile: "p2" })
+    const calls = captureConsole(() => {
+        logger.debug("d line")
+        logger.info("i line", "main")
+        logger.warn("w line", "RandomSelector")
+    })
+    assert.equal(calls.length, 3)
+    assert.ok(!String(calls[0][1]).includes("[profile="), `debug should have no trailer: ${calls[0][1]}`)
+    assert.ok(!String(calls[1][1]).includes("[profile="), `info should have no trailer: ${calls[1][1]}`)
+    assert.deepEqual(
+        calls[2].slice(1),
+        ["[WARN] [RandomSelector] w line [profile=p2 imageDirs=/a/b, /a/c]"],
+        `got: ${JSON.stringify(calls[2])}`)
+})
+
+console.log("\n[profileSelection] logger context trailer with scoped pools (exclusiveFlat/exclusiveDeep)")
+
+await runCase("scoped runs show [profile=... pool=<picked dir>] and omit imageDirs", () => {
+    const cfg = { settings: { imageDirectories: ["/mnt/media/Pictures/ART"] } }
+    const logger = new LoggerService(cfg, "warn", true)
+    logger.setRunContext({ profile: "art" })
+    logger.setRunContext({ poolDir: "/mnt/media/Pictures/ART/Sketches" })
+    const calls = captureConsole(() => {
+        logger.warn("[CHAIN] Step 2 (canny) returned no candidates for vertical, aborting chain", "ImageSelector")
+    })
+    assert.deepEqual(
+        calls.map((c) => c.slice(1)),
+        [["[WARN] [ImageSelector] [CHAIN] Step 2 (canny) returned no candidates for vertical, aborting chain [profile=art pool=/mnt/media/Pictures/ART/Sketches]"]],
+        `got: ${JSON.stringify(calls.map((c) => c.slice(1)))}`)
+})
+
+await runCase("poolDir merges over a prior profile-only call; unscoped runs still list roots", () => {
+    const scoped = new LoggerService(configStub, "warn", true)
+    scoped.setRunContext({ profile: "p", poolDir: "/r/sub" })
+    let calls = captureConsole(() => { scoped.error("e") })
+    assert.deepEqual(
+        calls.map((c) => c.slice(1)),
+        [["[ERR] e [profile=p pool=/r/sub]"]],
+        `got: ${JSON.stringify(calls)}`)
+
+    const unscoped = new LoggerService(configStub, "warn", true)
+    unscoped.setRunContext({ profile: "p" })
+    calls = captureConsole(() => { unscoped.warn("w") })
+    assert.deepEqual(
+        calls.map((c) => c.slice(1)),
+        [["[WARN] w [profile=p imageDirs=/some/base/dir]"]],
+        `got: ${JSON.stringify(calls)}`)
 })
 
 // ---- Summary ----

@@ -197,9 +197,11 @@ async function main() {
     })
 
     // 2. Initialize logger (has its own TTY-based color detection).
-    //    --silent raises the minimum level to WARN: banner/info/debug are hidden but
-    //    warnings and errors remain visible -- sized for cron mail capture.
-    const logger = new LoggerService(config, values.silent ? "warn" : undefined)
+    //    --silent/--cron raise the minimum level to WARN (banner/info/debug hidden,
+    //    warnings+errors still visible) AND switch output to plain text with [LEVEL]
+    //    prefixes instead of ANSI colors -- raw escape sequences read as "^[[33m..."
+    //    in cron mail, so unattended runs get readable, grep-friendly labels.
+    const logger = new LoggerService(config, values.silent ? "warn" : undefined, values.silent)
 
     if (values.debug) {
         logger.info("Debug overlay enabled via --debug flag", 'main')
@@ -223,6 +225,10 @@ async function main() {
     logger.info(`Profile: ${activeProfile || "(none)"}`, 'main')
     logger.info(`Image source director${activeDirs.length > 1 ? "ies" : "y"}: ${activeDirs.join(", ")}`, 'main')
     logger.info(`Database: ${dbPath}`, 'main')
+
+    // Record the resolved profile in the logger so unattended WARN/ERROR lines can name it
+    // (image directories are already known to the logger from config).
+    logger.setRunContext({ profile: activeProfile })
 
     // 3. Initialize system detection
     const system = new SystemService()
@@ -253,6 +259,11 @@ async function main() {
         const scope = resolvePoolScope(config.settings, { logger })
         if (scope.condition) {
             db.setScope({ condition: scope.condition, params: scope.params })
+        }
+        // Record the effective selection pool so unattended WARN/ERROR lines name the actual
+        // directory being scanned (the random per-run pick under exclusiveFlat/exclusiveDeep).
+        if (scope.chosenDir) {
+            logger.setRunContext({ poolDir: scope.chosenDir })
         }
         if (scope.effectiveMode !== "include") {
             logger.info(
