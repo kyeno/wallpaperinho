@@ -4,7 +4,8 @@
  *
  * Covers the crontab-usability features:
  *   - src/lib/profilePicker.js : eligibility filtering, deterministic random picks,
- *     all-excluded fallback, no-repeat rotation, empty-pool edge cases
+ *     all-excluded fallback, no-repeat rotation, empty-pool edge cases, and the
+ *     rotation-aware attempt order used when profiles are retried for a viable pool
  *   - src/services/configService.js : meta-key (excludeFromRandom) never leaking into
  *     .settings, and --directory mode still inheriting profile strategies/upscaler
  *   - src/services/loggerService.js : minimum-level filtering (--silent behavior) and
@@ -18,7 +19,7 @@
 
 import assert from "node:assert/strict"
 
-import { getEligibleProfileNames, selectRandomProfile } from "../src/lib/profilePicker.js"
+import { getEligibleProfileNames, selectRandomProfile, getProfileAttemptOrder } from "../src/lib/profilePicker.js"
 import ConfigService, { applyProfileOverrides } from "../src/services/configService.js"
 import LoggerService from "../src/services/loggerService.js"
 
@@ -90,6 +91,30 @@ await runCase("no-repeat rotation skips the last pick when alternatives exist", 
 await runCase("single-profile setup still works even when it was the last pick", () => {
     const one = { solo: { excludeFromRandom: true } } // excluded AND the only candidate
     assert.equal(selectRandomProfile(one, { excludeName: "solo" }), "solo")
+})
+
+await runCase("attempt order stays within eligible profiles and is rng-deterministic", () => {
+    const orderA = getProfileAttemptOrder(syntheticProfiles, { rng: makeLcg(1) })
+    const orderB = getProfileAttemptOrder(syntheticProfiles, { rng: makeLcg(1) })
+    assert.deepEqual(orderA, orderB, "same seed must yield the same attempt order")
+    assert.equal(new Set(orderA).size, 3, "every eligible profile appears exactly once")
+    assert.ok(!orderA.includes("beta"), "excluded profile must not enter the random attempt order")
+})
+
+await runCase("attempt order rotates last pick to the end but keeps it reachable", () => {
+    const two = { x: {}, y: {} }
+    assert.deepEqual(getProfileAttemptOrder(two, { excludeName: "x" }), ["y", "x"])
+    assert.deepEqual(getProfileAttemptOrder({ solo: {} }, { excludeName: "solo" }), ["solo"],
+        "single-profile setups must still work even when they were the last pick")
+})
+
+await runCase("attempt order falls back to definition order when nothing is eligible", () => {
+    const allExcluded = { a: { excludeFromRandom: true }, b: { excludeFromRandom: true } }
+    assert.deepEqual(getProfileAttemptOrder(allExcluded), ["a", "b"])
+})
+
+await runCase("empty profile map yields an empty attempt order", () => {
+    assert.deepEqual(getProfileAttemptOrder({}), [])
 })
 
 await runCase("empty profiles object yields empty string", () => {

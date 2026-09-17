@@ -31,7 +31,7 @@ import DisplayAssignment from "./lib/displayAssignment.js"
 import WallpaperGenerator from "./lib/wallpaperGenerator.js"
 import WallpaperSetter from "./lib/wallpaperSetter.js"
 import QuarantineService from "./lib/quarantineService.js"
-import { resolvePoolScope } from "./lib/poolScope.js"
+import { resolvePoolScope, InsufficientPoolError } from "./lib/poolScope.js"
 import { ConfigValidationError } from "./lib/displayConfig.js"
 
 const DB_DIR = path.resolve(__dirname, "..", "var", "db")
@@ -164,47 +164,82 @@ async function main() {
         return
     }
 
-    // Resolve the profile for this run:
+    // Resolve the profile AND its selection pool for this run in a single pass:
     //   - explicit --profile <name> always wins ("default" sentinel = implicit first profile)
-    //   - otherwise pick a random eligible profile (excludeFromRandom-aware), rotating
-    //     away from the last successfully used one when possible (--random makes this
-    //     explicit; it is also the default behavior since bare runs should surprise you).
+    //   - otherwise walk a rotation-aware order of eligible profiles (--random makes this
+    //     explicit; it is also the default behavior since bare runs should surprise you),
+    //     trying each until one provides a pool large enough to fill every display slot.
+    // The viability gate lives here, BEFORE any indexing/processing work: wallpaperGenerator
+    // needs one DISTINCT image per display, so a smaller pool can never succeed and would
+    // only burn pipeline time before failing late with an opaque error.
     const explicitProfile = values.profile !== "default" ? values.profile : null
-    let profileArg = explicitProfile
-    let pickedRandomly = false
+    const cliOverrides = {
+        debug: values.debug,
+        strategy: values.strategy,
+        imageDirectories: Array.isArray(values.directory) && values.directory.length > 0
+            ? values.directory
+            : null,
+    }
 
     if (!explicitProfile) {
         const allProfiles = ConfigService.listProfiles()
         const eligible = ConfigService.listEligibleProfiles()
         if (eligible.length === 0 && allProfiles.length > 0) {
-            console.warn("[main] All profiles are excluded from random selection -- falling back to the implicit default")
+            console.warn("[main] All profiles are excluded from random selection -- trying them in definition order")
         }
-        const candidate = ConfigService.pickRandomProfile({ excludeName: readLastPickedProfile() })
-        if (candidate) {
-            profileArg = candidate
-            pickedRandomly = true
-        }
+    }
+
+    const attemptOrder = explicitProfile
+        ? [explicitProfile]
+        : ConfigService.getProfileAttemptOrder({ excludeName: readLastPickedProfile() })
+
+    if (attemptOrder.length === 0) {
+        console.error("\n[FATAL] No profiles are defined in etc/profiles.js -- nothing to run")
+        process.exit(1)
     }
 
     // --- DI Composition Root ---
 
-    // 1. Initialize configuration with profile and CLI overrides in one call
-    let config
-    try {
-        config = new ConfigService(profileArg, {
-            debug: values.debug,
-            strategy: values.strategy,
-            imageDirectories: Array.isArray(values.directory) && values.directory.length > 0
-                ? values.directory
-                : null,
-        })
-    } catch (err) {
-        if (err instanceof ConfigValidationError) {
-            console.error(`\n[FATAL] ${err.message}`)
-            process.exit(1)
+    // 1. Initialize configuration with profile and CLI overrides in one call, then verify the
+    //    resulting selection pool can actually fill every display before spending pipeline time on it.
+    let config = null
+    let scope = null
+    const skippedProfiles = []
+    for (const name of attemptOrder) {
+        let candidate
+        try {
+            candidate = new ConfigService(name, cliOverrides)
+        } catch (err) {
+            if (err instanceof ConfigValidationError) {
+                console.error(`\n[FATAL] ${err.message}`)
+                process.exit(1)
+            }
+            throw err
         }
-        throw err
+        try {
+            scope = resolvePoolScope(candidate.settings, { requiredCount: candidate.settings.displays.length })
+        } catch (err) {
+            if (!(err instanceof InsufficientPoolError)) throw err
+            skippedProfiles.push({ profile: name, error: err })
+            console.warn(`[main] Profile "${name}" skipped -- ${err.message}`)
+            continue
+        }
+        config = candidate
+        break
     }
+
+    if (!config) {
+        const header = skippedProfiles.length === 1
+            ? "\n[FATAL] Selection pool too small -- fewer images than displays:"
+            : "\n[FATAL] No viable selection pool -- no profile provides enough images to fill all displays:"
+        console.error(header)
+        for (const s of skippedProfiles) {
+            console.error(`  - profile "${s.profile}": ${s.error.message}`)
+        }
+        process.exit(1)
+    }
+
+    const pickedRandomly = !explicitProfile
 
     // 2. Initialize logger (has its own TTY-based color detection).
     //    --silent/--cron raise the minimum level to WARN (banner/info/debug hidden,
@@ -222,7 +257,7 @@ async function main() {
     }
 
     if (pickedRandomly) {
-        logger.info(`Selected random profile: ${profileArg}`, 'main')
+        logger.info(`Selected random profile: ${config.getProfileName()}`, 'main')
     } else if (values.random && explicitProfile) {
         logger.info("Both --profile and --random given -- using explicit profile", 'main')
     }
@@ -262,29 +297,31 @@ async function main() {
     const setter = new WallpaperSetter(logger, system)
     const generator = new WallpaperGenerator(config, db, processor, selector, assignment, setter, logger, quarantine)
 
-    // Resolve the subdirectory driving mode (imageSubdirectoryMode) and apply it as a
-    // selection-time pool restriction. Indexing stays unscoped on purpose so shared
-    // catalogs remain complete regardless of which mode each profile requests.
-    try {
-        const scope = resolvePoolScope(config.settings, { logger })
-        if (scope.condition) {
-            db.setScope({ condition: scope.condition, params: scope.params })
-        }
-        // Record the effective selection pool so unattended WARN/ERROR lines name the actual
-        // directory being scanned (the random per-run pick under exclusiveFlat/exclusiveDeep).
-        if (scope.chosenDir) {
-            logger.setRunContext({ poolDir: scope.chosenDir })
-        }
-        if (scope.effectiveMode !== "include") {
-            logger.info(
-                `Selection pool scoped by imageSubdirectoryMode="${scope.mode}"` +
-                (scope.chosenDir ? ` -- picked "${path.basename(scope.chosenDir)}"` : ""),
-                'main'
-            )
-        }
-    } catch (err) {
-        logger.error(err.message, 'main')
-        process.exit(1)
+    // Apply the pre-resolved subdirectory driving-mode scope as a selection-time pool
+    // restriction (resolution + viability gate already happened at config commit time above).
+    // Indexing stays unscoped on purpose so shared catalogs remain complete regardless of
+    // which mode each profile requests.
+    if (scope.condition) {
+        db.setScope({ condition: scope.condition, params: scope.params })
+    }
+    // Record the effective selection pool so unattended WARN/ERROR lines name the actual
+    // directory being scanned (the random per-run pick under exclusiveFlat/exclusiveDeep).
+    if (scope.chosenDir) {
+        logger.setRunContext({ poolDir: scope.chosenDir })
+    }
+    if (scope.skippedThin.length > 0) {
+        const thinList = scope.skippedThin.map((t) => `${path.basename(t.dir)}(${t.count})`).join(", ")
+        logger.debug(
+            `Skipped ${scope.skippedThin.length} subdirector${scope.skippedThin.length === 1 ? "y" : "ies"} below minimum image count: ${thinList}`,
+            'main'
+        )
+    }
+    if (scope.effectiveMode !== "include") {
+        logger.info(
+            `Selection pool scoped by imageSubdirectoryMode="${scope.mode}"` +
+            (scope.chosenDir ? ` -- picked "${path.basename(scope.chosenDir)}"` : ""),
+            'main'
+        )
     }
 
     // Setup graceful shutdown handler now that all dependencies are initialized
@@ -313,7 +350,7 @@ async function main() {
         if (wallpaperPath) {
             // Remember this pick so the next unattended run rotates to a different profile.
             // Only recorded for random picks -- explicit --profile runs are intentional repeats.
-            if (pickedRandomly && !writeLastPickedProfile(profileArg)) {
+            if (pickedRandomly && !writeLastPickedProfile(config.getProfileName())) {
                 logger.warn("Could not persist last-picked profile state (rotation will repeat)", 'main')
             }
             logger.info(`Wallpaper set successfully: ${wallpaperPath}`, 'main')

@@ -63,8 +63,10 @@ export const config = {
      *   - "subdirsOnly"   skip loose root-level files; use subdirectories only
      *   - "exclusiveFlat" pick ONE random first-level subdir per run -> its own files only
      *   - "exclusiveDeep" pick ONE random first-level subdir per run -> its whole subtree
-     * Falls back to "include" when no eligible subdirectories exist. Directories listed in
-     * imageDirectoryExclusions never count as candidates for exclusive modes.
+     * A pool must hold at least one image PER DISPLAY SLOT, otherwise the run fails fast with
+     * diagnostics (unattended runs rotate to the next profile). Exclusive modes therefore only
+     * pick among subdirectories meeting that minimum; directories listed in
+     * imageDirectoryExclusions never count as candidates.
      */
     imageSubdirectoryMode: "include",
 

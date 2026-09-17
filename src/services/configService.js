@@ -18,7 +18,7 @@ import fs from "node:fs"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 
-import { getEligibleProfileNames, selectRandomProfile, RANDOM_EXCLUDE_KEY } from "../lib/profilePicker.js"
+import { getEligibleProfileNames, selectRandomProfile, getProfileAttemptOrder, RANDOM_EXCLUDE_KEY } from "../lib/profilePicker.js"
 import { validateDisplays } from "../lib/displayConfig.js"
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -149,6 +149,16 @@ class ConfigService {
      */
     static pickRandomProfile({ excludeName = null } = {}) {
         return selectRandomProfile(profiles, { excludeName })
+    }
+
+    /**
+     * Rotation-aware profile attempt order for unattended runs (see profilePicker):
+     * shuffled eligible profiles with the previous pick rotated to the end.
+     * @param {{excludeName?: string|null}} [options={}] - Previously picked profile name to rotate away from.
+     * @returns {string[]} Ordered candidate profiles ([] when no profiles are defined).
+     */
+    static getProfileAttemptOrder({ excludeName = null } = {}) {
+        return getProfileAttemptOrder(profiles, { excludeName })
     }
 
     /**

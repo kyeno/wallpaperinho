@@ -7,7 +7,7 @@
  *   - include / flat / subdirsOnly pool shapes across multiple roots
  *   - exclusiveFlat vs exclusiveDeep random pick semantics (deterministic via injected rng)
  *   - LIKE metacharacter escaping (_ , spaces) in root/subdir names
- *   - fallback-to-include when no eligible subdirectories exist
+ *   - viability gate: pools below requiredCount raise InsufficientPoolError; thin exclusive candidates are skipped
  *   - invalid mode values failing fast with a helpful message
  *
  * Uses a real DatabaseService backed by a throwaway SQLite file plus fake image rows --
@@ -25,7 +25,7 @@ import os from "node:os"
 import path from "node:path"
 
 import DatabaseService from "../src/services/databaseService.js"
-import { resolvePoolScope } from "../src/lib/poolScope.js"
+import { resolvePoolScope, InsufficientPoolError } from "../src/lib/poolScope.js"
 import RandomSelector from "../src/lib/selectors/randomSelector.js"
 import EntropySelector from "../src/lib/selectors/entropySelector.js"
 
@@ -70,6 +70,20 @@ fs.mkdirSync(path.join(rootA, "gamma"), { recursive: true })   // excluded via c
 fs.mkdirSync(path.join(rootB, "under_score"), { recursive: true })
 fs.mkdirSync(path.join(rootB, "undrZscore"), { recursive: true })  // would match unescaped `_`
 fs.mkdirSync(emptyRoot, { recursive: true })
+
+// --- Viability-gate fixtures -- real files on disk because the gate counts off-disk ------
+// a_small(1) < b_mid(2) < z_big(4 flat + 1 nested): sort order matters for rng=0 assertions.
+// skip_me holds extra images that must be pruned whenever it is listed in exclusions.
+const libC = path.join(workDir, "lib C")
+for (const dir of ["a_small", "b_mid", "z_big/nested", "skip_me"]) fs.mkdirSync(path.join(libC, dir), { recursive: true })
+fs.writeFileSync(path.join(libC, "a_small", "s.jpg"), "x")
+fs.writeFileSync(path.join(libC, "b_mid", "m1.jpg"), "x")
+fs.writeFileSync(path.join(libC, "b_mid", "m2.png"), "x")
+for (let i = 0; i < 4; i++) fs.writeFileSync(path.join(libC, "z_big", `z${i}.jpg`), "x")
+fs.writeFileSync(path.join(libC, "z_big", "nested", "deep.webp"), "y")   // exclusiveDeep pool only
+for (let i = 0; i < 5; i++) fs.writeFileSync(path.join(libC, "skip_me", `q${i}.jpg`), "x")
+fs.writeFileSync(path.join(libC, "loose_a.jpg"), "z")                    // flat/include pools only
+fs.writeFileSync(path.join(libC, "loose_b.jpeg"), "z")                   // flat/include pools only
 
 const rows = [
     { path: `${rootA}/top.jpg`,             width: 2560, height: 1600, entropy: 4.1 },
@@ -144,20 +158,21 @@ try {
         assert.deepEqual(allPoolPaths(db), [`${rootB}/under_score/u1.jpg`])
     })
 
-    // Case 7 -- fallback when no eligible subdirectories exist anywhere
-    await runCase("subdir-dependent modes fall back to include when nothing qualifies", async () => {
+    // Case 7 -- structural failure: subdir-dependent modes with NO eligible subdirs throw
+    // (hard fail instead of silently widening to "include" and mixing loose root files in)
+    await runCase("subdir-dependent modes raise InsufficientPoolError when nothing qualifies", async () => {
+        db.setScope(null)   // clear case-6 scope first; the throws below never reach setScope
         for (const mode of ["exclusiveFlat", "exclusiveDeep", "subdirsOnly"]) {
-            const before = messages.length
-            const scope = applyMode(mode, { roots: [emptyRoot] })
-            assert.equal(scope.effectiveMode, "include", `${mode} should have fallen back`)
-            assert.equal(scope.condition, "", `${mode}: condition must be empty after fallback`)
-            assert.ok(
-                messages.slice(before).some((m) => m.includes("falling back")),
-                `${mode}: expected a fallback warning in logs`
+            assert.throws(
+                () => resolvePoolScope(
+                    { imageDirectories: [emptyRoot], imageSubdirectoryMode: mode },
+                    { logger: quietLogger }
+                ),
+                (err) => err instanceof InsufficientPoolError && /no eligible subdirector/i.test(err.message),
+                `${mode}: expected an InsufficientPoolError naming the missing subdirectories`
             )
         }
-        db.setScope(null)   // cleared by the last no-op setScope; full catalog visible again
-        assert.deepEqual(allPoolPaths(db), ALL)
+        assert.deepEqual(allPoolPaths(db), ALL, "full catalog must remain visible after the throws")
     })
 
     // Case 8 -- invalid modes fail fast with a helpful message
@@ -207,6 +222,124 @@ try {
             `${rootB}/under_score/u1.jpg`, `${rootB}/undrZscore/z1.jpg`,
         ].sort()
         assert.deepEqual(results, expected, "builder query must be restricted to scoped verticals")
+    })
+
+    // Case 12 -- viability gate: exclusiveFlat skips thin subdirs instead of picking them
+    await runCase("exclusiveFlat skips subdirectories below requiredCount and picks a viable one", async () => {
+        const scope = resolvePoolScope(
+            { imageDirectories: [libC], imageSubdirectoryMode: "exclusiveFlat", imageDirectoryExclusions: ["skip_me"] },
+            { rng: () => 0, requiredCount: 3 }
+        )
+        assert.equal(scope.chosenDir, path.join(libC, "z_big"), "first VIABLE candidate wins, not first overall")
+        assert.deepEqual(
+            scope.skippedThin.map((t) => `${path.basename(t.dir)}(${t.count})`),
+            ["a_small(1)", "b_mid(2)"],
+            "thin candidates must be reported with their counts"
+        )
+    })
+
+    // Case 13 -- lower minimum admits more folders; the pick index applies to the filtered list
+    await runCase("requiredCount=2 admits b_mid as the new first viable candidate", async () => {
+        const scope = resolvePoolScope(
+            { imageDirectories: [libC], imageSubdirectoryMode: "exclusiveFlat", imageDirectoryExclusions: ["skip_me"] },
+            { rng: () => 0, requiredCount: 2 }
+        )
+        assert.equal(scope.chosenDir, path.join(libC, "b_mid"))
+        assert.deepEqual(scope.skippedThin.map((t) => path.basename(t.dir)), ["a_small"])
+    })
+
+    // Case 14 -- every candidate below the minimum -> typed error carrying all attempted counts
+    await runCase("all-thin exclusive pool raises InsufficientPoolError listing each count", async () => {
+        let err
+        try {
+            resolvePoolScope(
+                { imageDirectories: [libC], imageSubdirectoryMode: "exclusiveFlat", imageDirectoryExclusions: ["skip_me"] },
+                { requiredCount: 9 }
+            )
+            throw new Error("expected InsufficientPoolError")
+        } catch (e) { err = e }
+        assert.ok(err instanceof InsufficientPoolError, `got ${err.name}: ${err.message}`)
+        assert.deepEqual(
+            err.attempted.map((t) => `${path.basename(t.dir)}(${t.count})`),
+            ["a_small(1)", "b_mid(2)", "z_big(4)"],
+            "attempted list must carry per-directory counts"
+        )
+        assert.match(err.message, /need at least 9 distinct image\(s\)/)
+        assert.match(err.message, /a_small\(1\), b_mid\(2\), z_big\(4\)/)
+    })
+
+    // Case 15 -- exclusiveDeep counts the whole subtree; flat does not
+    await runCase("exclusiveDeep viability uses recursive counts (nested files included)", async () => {
+        const deepOk = resolvePoolScope(
+            { imageDirectories: [libC], imageSubdirectoryMode: "exclusiveDeep", imageDirectoryExclusions: ["skip_me"] },
+            { rng: () => 0, requiredCount: 5 }   // only z_big reaches 5 (4 flat + 1 nested)
+        )
+        assert.equal(deepOk.chosenDir, path.join(libC, "z_big"))
+        assert.ok(!deepOk.condition.includes("NOT LIKE"), "deep pool condition shape unchanged")
+
+        let err
+        try {
+            resolvePoolScope(
+                { imageDirectories: [libC], imageSubdirectoryMode: "exclusiveFlat", imageDirectoryExclusions: ["skip_me"] },
+                { requiredCount: 5 }             // same minimum, but flat sees only 4 in z_big
+            )
+            throw new Error("expected InsufficientPoolError")
+        } catch (e) { err = e }
+        assert.ok(err instanceof InsufficientPoolError, `got ${err.name}: ${err.message}`)
+    })
+
+    // Case 16 -- flat mode gates on loose root-level files only
+    await runCase("flat total-count gate counts direct files across roots", async () => {
+        let err
+        try {
+            resolvePoolScope({ imageDirectories: [libC], imageSubdirectoryMode: "flat" }, { requiredCount: 3 })
+            throw new Error("expected InsufficientPoolError")
+        } catch (e) { err = e }
+        assert.ok(err instanceof InsufficientPoolError, `got ${err.name}: ${err.message}`)
+        assert.match(err.message, /only 2 loose root-level image file\(s\)/)
+
+        const ok = resolvePoolScope({ imageDirectories: [libC], imageSubdirectoryMode: "flat" }, { requiredCount: 2 })
+        assert.ok(ok.condition.includes("LIKE"), "viable flat pool still resolves its condition")
+    })
+
+    // Case 17 -- include mode gates on the full recursive budget, pruning exclusions
+    await runCase("include total-count gate honors imageDirectoryExclusions while counting", async () => {
+        let err
+        try {
+            resolvePoolScope(
+                { imageDirectories: [libC], imageSubdirectoryMode: "include", imageDirectoryExclusions: ["skip_me"] },
+                { requiredCount: 11 }   // real total is 10 without skip_me's 5 files
+            )
+            throw new Error("expected InsufficientPoolError")
+        } catch (e) { err = e }
+        assert.ok(err instanceof InsufficientPoolError, `got ${err.name}: ${err.message}`)
+        assert.match(err.message, /only 10 image file\(s\) found under configured root\(s\)/)
+
+        const ok = resolvePoolScope(
+            { imageDirectories: [libC], imageSubdirectoryMode: "include", imageDirectoryExclusions: ["skip_me"] },
+            { requiredCount: 10 }
+        )
+        assert.equal(ok.condition, "", "include scope stays unrestricted")
+    })
+
+    // Case 18 -- subdirsOnly quantitative gate over the union of eligible subtrees
+    await runCase("subdirsOnly gates on the combined subtree budget", async () => {
+        let err
+        try {
+            resolvePoolScope(
+                { imageDirectories: [libC], imageSubdirectoryMode: "subdirsOnly", imageDirectoryExclusions: ["skip_me"] },
+                { requiredCount: 9 }     // union is 8 (a_small + b_mid + z_big incl. nested)
+            )
+            throw new Error("expected InsufficientPoolError")
+        } catch (e) { err = e }
+        assert.ok(err instanceof InsufficientPoolError, `got ${err.name}: ${err.message}`)
+        assert.match(err.message, /only 8 image file\(s\) below configured root\(s\)/)
+
+        const ok = resolvePoolScope(
+            { imageDirectories: [libC], imageSubdirectoryMode: "subdirsOnly", imageDirectoryExclusions: ["skip_me"] },
+            { requiredCount: 8 }
+        )
+        assert.ok(ok.params.some((p) => String(p).includes("/%/%")), "viable subdirsOnly pool keeps its depth condition")
     })
 } catch (err) {
     failures++
